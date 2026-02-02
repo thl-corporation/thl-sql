@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PostgreSQL Manager</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f4f9; color: #333; max-width: 800px; margin: 40px auto; padding: 20px; }
+        h1 { color: #336791; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; font-weight: bold; }
+        input { width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        button { background: #336791; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background: #254a6d; }
+        #result { margin-top: 20px; background: #e8f5e9; padding: 15px; border-radius: 4px; border-left: 5px solid #4caf50; display: none; }
+        code { display: block; white-space: pre-wrap; word-break: break-all; background: #eee; padding: 10px; margin-top: 10px; border-radius: 4px; }
+        .error { background: #ffebee; border-left-color: #f44336; }
+    </style>
+</head>
+<body>
+    <h1>🐘 PostgreSQL Access Factory</h1>
+    
+    <div class="card">
+        <h2>Crear Nuevo Cliente & Base de Datos</h2>
+        <form id="createForm">
+            <label for="clientName">Nombre del Cliente / Proyecto</label>
+            <input type="text" id="clientName" placeholder="Ej: Tienda Online" required>
+            
+            <label for="dbName">Nombre de la Base de Datos</label>
+            <input type="text" id="dbName" placeholder="Ej: ecommerce_db" required>
+            
+            <button type="submit">Generar Accesos</button>
+        </form>
+    </div>
+
+    <div id="result" class="card">
+        <h3>✅ ¡Base de Datos Creada!</h3>
+        <p>Guarda estas credenciales en un lugar seguro. No se mostrarán de nuevo.</p>
+        <code id="outputData"></code>
+    </div>
+
+    <script>
+        document.getElementById('createForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = e.target.querySelector('button');
+            const resultDiv = document.getElementById('result');
+            const outputCode = document.getElementById('outputData');
+            
+            btn.disabled = true;
+            btn.innerText = "Procesando...";
+            resultDiv.style.display = 'none';
+            resultDiv.classList.remove('error');
+
+            const data = {
+                client_name: document.getElementById('clientName').value,
+                db_name: document.getElementById('dbName').value
+            };
+
+            try {
+                const response = await fetch('/create-client', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                
+                const result = await response.json();
+                
+                if (!response.ok) throw new Error(result.detail || "Error desconocido");
+
+                resultDiv.style.display = 'block';
+                resultDiv.querySelector('h3').innerText = "✅ ¡Base de Datos Creada!";
+                outputCode.innerText = JSON.stringify(result.connection_info, null, 2);
+            } catch (err) {
+                resultDiv.style.display = 'block';
+                resultDiv.classList.add('error');
+                resultDiv.querySelector('h3').innerText = "❌ Error";
+                outputCode.innerText = err.message;
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "Generar Accesos";
+            }
+        });
+    </script>
+</body>
+</html>
