@@ -101,7 +101,108 @@
     </main>
 
     <script>
-        // Logout handler
+        // --- KPI Charts Configuration ---
+        const CHART_HISTORY = 60; // Keep last 60 seconds
+        const UPDATE_INTERVAL = 2000; // Update every 2 seconds
+
+        // Common Chart Options
+        const commonOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: { intersect: false, mode: 'index' },
+            plugins: { legend: { display: false }, tooltip: { enabled: true } },
+            scales: {
+                x: { display: false },
+                y: { beginAtZero: true, max: 100, grid: { display: false } }
+            },
+            elements: { point: { radius: 0 }, line: { tension: 0.4 } }
+        };
+
+        // Initialize Charts safely
+        let cpuChart, memChart;
+
+        function initCharts() {
+            const cpuCanvas = document.getElementById('cpuChart');
+            const memCanvas = document.getElementById('memoryChart');
+
+            if (cpuCanvas && typeof Chart !== 'undefined') {
+                cpuChart = new Chart(cpuCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: Array(CHART_HISTORY).fill(''),
+                        datasets: [{
+                            label: 'CPU %',
+                            data: Array(CHART_HISTORY).fill(0),
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            fill: true,
+                            borderWidth: 2
+                        }]
+                    },
+                    options: commonOptions
+                });
+            }
+
+            if (memCanvas && typeof Chart !== 'undefined') {
+                memChart = new Chart(memCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: Array(CHART_HISTORY).fill(''),
+                        datasets: [{
+                            label: 'Memory %',
+                            data: Array(CHART_HISTORY).fill(0),
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                            fill: true,
+                            borderWidth: 2
+                        }]
+                    },
+                    options: commonOptions
+                });
+            }
+        }
+
+        // Metrics Fetcher
+        async function fetchMetrics() {
+            try {
+                const res = await fetch('/api/stats');
+                
+                if (res.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
+                
+                if (!res.ok) return;
+                const data = await res.json();
+                
+                if (cpuChart) {
+                    const cpuData = cpuChart.data.datasets[0].data;
+                    cpuData.push(data.cpu);
+                    cpuData.shift();
+                    cpuChart.update();
+                }
+
+                if (memChart) {
+                    const memData = memChart.data.datasets[0].data;
+                    memData.push(data.memory.percent);
+                    memData.shift();
+                    memChart.update();
+                }
+
+            } catch (e) {
+                console.error("Failed to fetch metrics", e);
+            }
+        }
+
+        // Start everything when DOM is ready
+        document.addEventListener('DOMContentLoaded', () => {
+            initCharts();
+            setInterval(fetchMetrics, UPDATE_INTERVAL);
+            fetchMetrics(); // Initial call
+        });
+
+        // --- Logout handler ---
         document.getElementById('logoutBtn').addEventListener('click', async () => {
             try {
                 await fetch('/logout', { method: 'POST' });
