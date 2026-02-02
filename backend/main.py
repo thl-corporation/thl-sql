@@ -6,6 +6,7 @@ from psycopg2 import sql
 import secrets
 import string
 import os
+import psutil
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +28,7 @@ app.add_middleware(
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_NAME = os.getenv("DB_NAME", "postgres")
 DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD", None)
 
 # Auth Configuration
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
@@ -38,6 +40,10 @@ SESSION_TOKEN = "session_" + secrets.token_urlsafe(32)
 class ClientRequest(BaseModel):
     client_name: str
     db_name: str
+
+class UpdateClientRequest(BaseModel):
+    client_name: str | None = None
+    new_password: str | None = None
 
 class LoginRequest(BaseModel):
     username: str
@@ -58,12 +64,40 @@ def generate_password(length=24):
 
 def get_db_connection():
     try:
-        conn = psycopg2.connect(database="postgres", user="postgres", host="/var/run/postgresql")
+        conn = psycopg2.connect(
+            database=DB_NAME,
+            user=DB_USER,
+            host=DB_HOST,
+            password=DB_PASSWORD
+        )
         conn.autocommit = True
         return conn
     except Exception as e:
         print(f"Connection error: {e}")
         raise HTTPException(status_code=500, detail="Could not connect to database system")
+
+def init_metadata_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS managed_clients (
+                id SERIAL PRIMARY KEY,
+                client_name TEXT NOT NULL,
+                db_name TEXT NOT NULL,
+                db_user TEXT NOT NULL,
+                db_password TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+    except Exception as e:
+        print(f"Error initializing metadata DB: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
+# Initialize DB on startup
+init_metadata_db()
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
@@ -132,6 +166,12 @@ def create_client(request: ClientRequest, username: str = Depends(get_current_us
         # 3. Revoke connect on database from public
         cur.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM public").format(sql.Identifier(db_name)))
         
+        # 4. Save metadata
+        cur.execute(
+            "INSERT INTO managed_clients (client_name, db_name, db_user, db_password) VALUES (%s, %s, %s, %s)",
+            (request.client_name, db_name, db_user, db_pass)
+        )
+
         return {
             "status": "success",
             "connection_info": {
@@ -144,13 +184,77 @@ def create_client(request: ClientRequest, username: str = Depends(get_current_us
             }
         }
     except Exception as e:
+        # Try to rollback creation if possible, or just fail
+        # In autocommit mode, we can't rollback easily, so we rely on manual cleanup or retry
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+@app.get("/clients")
+def list_clients(username: str = Depends(get_current_username)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id, client_name, db_name, db_user, db_password, created_at FROM managed_clients ORDER BY created_at DESC")
+        rows = cur.fetchall()
+        clients = []
+        for row in rows:
+            clients.append({
+                "id": row[0],
+                "client_name": row[1],
+                "db_name": row[2],
+                "db_user": row[3],
+                "db_password": row[4],
+                "created_at": row[5].isoformat() if row[5] else None
+            })
+        return clients
+    finally:
+        cur.close()
+        conn.close()
+
+@app.delete("/clients/{client_id}")
+def delete_client(client_id: int, username: str = Depends(get_current_username)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # Get client details first
+        cur.execute("SELECT db_name, db_user FROM managed_clients WHERE id = %s", (client_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        
+        db_name, db_user = row
+
+        # Drop Database
+        # Note: Need to terminate connections first usually, but for now simple drop
+        # Force drop by terminating backends
+        cur.execute(sql.SQL("""
+            SELECT pg_terminate_backend(pg_stat_activity.pid)
+            FROM pg_stat_activity
+            WHERE pg_stat_activity.datname = {}
+            AND pid <> pg_backend_pid();
+        """).format(sql.Literal(db_name)))
+        
+        cur.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(db_name)))
+        
+        # Drop User
+        cur.execute(sql.SQL("DROP USER IF EXISTS {}").format(sql.Identifier(db_user)))
+        
+        # Remove from metadata
+        cur.execute("DELETE FROM managed_clients WHERE id = %s", (client_id,))
+        
+        return {"status": "success", "message": f"Client {client_id} deleted"}
+    except Exception as e:
+        print(f"Error deleting client: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         cur.close()
         conn.close()
 
 @app.get("/list-databases")
 def list_databases(username: str = Depends(get_current_username)):
+    # Keep this for compatibility or debug
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT datname FROM pg_database WHERE datistemplate = false;")
