@@ -1,6 +1,5 @@
-from fastapi import FastAPI, HTTPException, Depends, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Depends, status, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel
 import psycopg2
 from psycopg2 import sql
@@ -11,7 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
-security = HTTPBasic()
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,20 +24,29 @@ DB_HOST = "localhost"
 DB_NAME = "postgres"
 DB_USER = "postgres"
 
-def get_current_username(credentials: HTTPBasicCredentials = Depends(security)):
-    correct_username = secrets.compare_digest(credentials.username, "admin")
-    correct_password = secrets.compare_digest(credentials.password, "S@p0rt3")
-    if not (correct_username and correct_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
+# Auth Configuration
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "S@p0rt3"
+COOKIE_NAME = "access_token"
+# Simple token for this single-user app. In production use JWT.
+SESSION_TOKEN = "session_" + secrets.token_urlsafe(32)
 
 class ClientRequest(BaseModel):
     client_name: str
     db_name: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+def get_current_username(request: Request):
+    token = request.cookies.get(COOKIE_NAME)
+    if not token or token != SESSION_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated"
+        )
+    return ADMIN_USERNAME
 
 def generate_password(length=24):
     alphabet = string.ascii_letters + string.digits
@@ -54,8 +61,47 @@ def get_db_connection():
         print(f"Connection error: {e}")
         raise HTTPException(status_code=500, detail="Could not connect to database system")
 
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    # If already logged in, redirect to dashboard
+    token = request.cookies.get(COOKIE_NAME)
+    if token == SESSION_TOKEN:
+        return RedirectResponse(url="/")
+    
+    with open("static/login.html", "r", encoding="utf-8") as f:
+        return f.read()
+
+@app.post("/login")
+def login(creds: LoginRequest, response: Response):
+    correct_username = secrets.compare_digest(creds.username, ADMIN_USERNAME)
+    correct_password = secrets.compare_digest(creds.password, ADMIN_PASSWORD)
+    
+    if not (correct_username and correct_password):
+        raise HTTPException(status_code=400, detail="Usuario o contraseña incorrectos")
+    
+    # Set cookie
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=SESSION_TOKEN,
+        httponly=True,
+        max_age=3600 * 24, # 24 hours
+        samesite="lax",
+        secure=False # Set to True in production with HTTPS
+    )
+    return {"message": "Login successful"}
+
+@app.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(COOKIE_NAME)
+    return {"message": "Logged out"}
+
 @app.get("/", response_class=HTMLResponse)
-def read_root(username: str = Depends(get_current_username)):
+def read_root(request: Request):
+    # Check auth manually for the root page to redirect instead of 401
+    token = request.cookies.get(COOKIE_NAME)
+    if not token or token != SESSION_TOKEN:
+        return RedirectResponse(url="/login")
+        
     with open("static/index.html", "r", encoding="utf-8") as f:
         return f.read()
 
@@ -110,8 +156,4 @@ def list_databases(username: str = Depends(get_current_username)):
     conn.close()
     return {"databases": dbs}
 
-# Mount static files ONLY for assets if needed (not root)
-# In this simple case, we serve index.html via root endpoint, 
-# so we don't strictly need static mount unless we add css/js files later.
-# We will mount it at /static just in case, but root is handled by read_root
 app.mount("/static", StaticFiles(directory="static"), name="static")

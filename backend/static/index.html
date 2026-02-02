@@ -4,52 +4,111 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PostgreSQL Manager</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f4f9; color: #333; max-width: 800px; margin: 40px auto; padding: 20px; }
-        h1 { color: #336791; }
-        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        label { display: block; margin-bottom: 8px; font-weight: bold; }
-        input { width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
-        button { background: #336791; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 16px; }
-        button:hover { background: #254a6d; }
-        #result { margin-top: 20px; background: #e8f5e9; padding: 15px; border-radius: 4px; border-left: 5px solid #4caf50; display: none; }
-        code { display: block; white-space: pre-wrap; word-break: break-all; background: #eee; padding: 10px; margin-top: 10px; border-radius: 4px; }
-        .error { background: #ffebee; border-left-color: #f44336; }
-    </style>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            500: '#336791',
+                            600: '#254a6d',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
 </head>
-<body>
-    <h1>🐘 PostgreSQL Access Factory</h1>
-    
-    <div class="card">
-        <h2>Crear Nuevo Cliente & Base de Datos</h2>
-        <form id="createForm">
-            <label for="clientName">Nombre del Cliente / Proyecto</label>
-            <input type="text" id="clientName" placeholder="Ej: Tienda Online" required>
-            
-            <label for="dbName">Nombre de la Base de Datos</label>
-            <input type="text" id="dbName" placeholder="Ej: ecommerce_db" required>
-            
-            <button type="submit">Generar Accesos</button>
-        </form>
-    </div>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+    <nav class="bg-white shadow-sm border-b border-slate-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <span class="text-2xl mr-2">🐘</span>
+                    <h1 class="text-xl font-bold text-brand-500">PostgreSQL Access Factory</h1>
+                </div>
+                <div class="flex items-center">
+                    <button id="logoutBtn" class="text-slate-600 hover:text-red-600 font-medium px-3 py-2 rounded-md text-sm transition-colors flex items-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 mr-1">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75" />
+                        </svg>
+                        Cerrar Sesión
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
 
-    <div id="result" class="card">
-        <h3>✅ ¡Base de Datos Creada!</h3>
-        <p>Guarda estas credenciales en un lugar seguro. No se mostrarán de nuevo.</p>
-        <code id="outputData"></code>
-    </div>
+    <main class="max-w-4xl mx-auto py-10 px-4 sm:px-6 lg:px-8">
+        <div class="bg-white shadow rounded-lg overflow-hidden border border-slate-200 mb-8">
+            <div class="px-4 py-5 sm:p-6">
+                <h2 class="text-lg font-medium leading-6 text-slate-900 mb-4">Crear Nuevo Cliente & Base de Datos</h2>
+                <form id="createForm" class="space-y-6">
+                    <div>
+                        <label for="clientName" class="block text-sm font-medium text-slate-700">Nombre del Cliente / Proyecto</label>
+                        <div class="mt-1">
+                            <input type="text" id="clientName" placeholder="Ej: Tienda Online" required class="block w-full rounded-md border-slate-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 sm:text-sm px-3 py-2 border">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label for="dbName" class="block text-sm font-medium text-slate-700">Nombre de la Base de Datos</label>
+                        <div class="mt-1">
+                            <input type="text" id="dbName" placeholder="Ej: ecommerce_db" required class="block w-full rounded-md border-slate-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 sm:text-sm px-3 py-2 border">
+                        </div>
+                    </div>
+
+                    <div>
+                        <button type="submit" class="inline-flex justify-center rounded-md border border-transparent bg-brand-500 py-2 px-4 text-sm font-medium text-white shadow-sm hover:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 transition-colors w-full sm:w-auto">
+                            Generar Accesos
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div id="result" class="hidden bg-white shadow rounded-lg overflow-hidden border border-slate-200">
+            <div class="px-4 py-5 sm:p-6">
+                <div id="resultHeader" class="flex items-center mb-4">
+                    <svg class="h-6 w-6 text-green-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <h3 class="text-lg font-medium text-green-800">¡Base de Datos Creada!</h3>
+                </div>
+                <p class="text-sm text-slate-500 mb-4">Guarda estas credenciales en un lugar seguro. No se mostrarán de nuevo.</p>
+                <div class="bg-slate-50 rounded-md p-4 border border-slate-200 overflow-x-auto">
+                    <code id="outputData" class="text-sm text-slate-800 font-mono whitespace-pre"></code>
+                </div>
+            </div>
+        </div>
+    </main>
 
     <script>
+        // Logout handler
+        document.getElementById('logoutBtn').addEventListener('click', async () => {
+            try {
+                await fetch('/logout', { method: 'POST' });
+                window.location.href = '/login';
+            } catch (err) {
+                console.error('Logout failed', err);
+                window.location.href = '/login';
+            }
+        });
+
+        // Form handler
         document.getElementById('createForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const btn = e.target.querySelector('button');
             const resultDiv = document.getElementById('result');
             const outputCode = document.getElementById('outputData');
+            const resultHeader = document.getElementById('resultHeader');
             
+            const originalBtnText = btn.innerText;
             btn.disabled = true;
-            btn.innerText = "Procesando...";
-            resultDiv.style.display = 'none';
-            resultDiv.classList.remove('error');
+            btn.innerHTML = '<svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Procesando...';
+            
+            resultDiv.classList.add('hidden');
 
             const data = {
                 client_name: document.getElementById('clientName').value,
@@ -63,21 +122,31 @@
                     body: JSON.stringify(data)
                 });
                 
+                // Handle auth redirects if session expired
+                if (response.status === 401 || response.redirected) {
+                    window.location.href = '/login';
+                    return;
+                }
+
                 const result = await response.json();
                 
                 if (!response.ok) throw new Error(result.detail || "Error desconocido");
 
-                resultDiv.style.display = 'block';
-                resultDiv.querySelector('h3').innerText = "✅ ¡Base de Datos Creada!";
+                resultDiv.classList.remove('hidden');
+                // Success styling
+                resultHeader.innerHTML = '<svg class="h-6 w-6 text-green-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg><h3 class="text-lg font-medium text-green-800">¡Base de Datos Creada!</h3>';
                 outputCode.innerText = JSON.stringify(result.connection_info, null, 2);
+                
+                // Clear form
+                e.target.reset();
             } catch (err) {
-                resultDiv.style.display = 'block';
-                resultDiv.classList.add('error');
-                resultDiv.querySelector('h3').innerText = "❌ Error";
+                resultDiv.classList.remove('hidden');
+                // Error styling
+                resultHeader.innerHTML = '<svg class="h-6 w-6 text-red-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg><h3 class="text-lg font-medium text-red-800">Error</h3>';
                 outputCode.innerText = err.message;
             } finally {
                 btn.disabled = false;
-                btn.innerText = "Generar Accesos";
+                btn.innerText = originalBtnText;
             }
         });
     </script>
