@@ -340,9 +340,78 @@
         }
 
         function copyToClipboard(text, msg = 'Copiado al portapapeles') {
-            navigator.clipboard.writeText(text).then(() => {
-                showToast(msg);
-            });
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(() => {
+                    showToast(msg);
+                });
+            } else {
+                // Fallback for insecure context (HTTP)
+                const textArea = document.createElement("textarea");
+                textArea.value = text;
+                textArea.style.position = "fixed";
+                textArea.style.left = "-9999px";
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                    showToast(msg);
+                } catch (err) {
+                    console.error('Fallback: Oops, unable to copy', err);
+                    alert('No se pudo copiar automáticamente. Por favor copia manualmente.');
+                }
+                document.body.removeChild(textArea);
+            }
+        }
+
+        function generatePassword(length = 16) {
+            const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
+            let retVal = "";
+            for (let i = 0, n = charset.length; i < length; ++i) {
+                retVal += charset.charAt(Math.floor(Math.random() * n));
+            }
+            return retVal;
+        }
+
+        function openEditModal(id, name) {
+            document.getElementById('editClientId').value = id;
+            document.getElementById('editClientName').value = name;
+            document.getElementById('editClientPassword').value = '';
+            document.getElementById('editModal').classList.remove('hidden');
+        }
+
+        function closeEditModal() {
+            document.getElementById('editModal').classList.add('hidden');
+        }
+
+        async function saveClientChanges() {
+            const id = document.getElementById('editClientId').value;
+            const name = document.getElementById('editClientName').value;
+            const password = document.getElementById('editClientPassword').value;
+
+            if (!name) return alert('El nombre es requerido');
+
+            const data = { client_name: name };
+            if (password) data.new_password = password;
+
+            try {
+                const res = await fetch(`/clients/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                if (res.ok) {
+                    showToast('Cliente actualizado correctamente');
+                    closeEditModal();
+                    fetchClients();
+                } else {
+                    const err = await res.json();
+                    alert('Error: ' + err.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            }
         }
 
         function copyResultCode() {

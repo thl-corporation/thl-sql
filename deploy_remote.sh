@@ -16,7 +16,7 @@ systemctl restart postgresql
 cd /var/www/pg_manager
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
 
 # 3. Create Systemd Service
 cat <<EOF > /etc/systemd/system/pg_manager.service

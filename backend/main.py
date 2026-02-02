@@ -213,6 +213,35 @@ def list_clients(username: str = Depends(get_current_username)):
         cur.close()
         conn.close()
 
+@app.put("/clients/{client_id}")
+def update_client(client_id: int, request: UpdateClientRequest, username: str = Depends(get_current_username)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT db_user, client_name FROM managed_clients WHERE id = %s", (client_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        
+        db_user, current_client_name = row
+        
+        if request.new_password:
+            # Update Postgres User Password
+            cur.execute(sql.SQL("ALTER USER {} WITH PASSWORD %s").format(sql.Identifier(db_user)), [request.new_password])
+            # Update Metadata
+            cur.execute("UPDATE managed_clients SET db_password = %s WHERE id = %s", (request.new_password, client_id))
+            
+        if request.client_name and request.client_name != current_client_name:
+            cur.execute("UPDATE managed_clients SET client_name = %s WHERE id = %s", (request.client_name, client_id))
+            
+        return {"status": "success", "message": "Client updated successfully"}
+    except Exception as e:
+        print(f"Error updating client: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
 @app.delete("/clients/{client_id}")
 def delete_client(client_id: int, username: str = Depends(get_current_username)):
     conn = get_db_connection()
