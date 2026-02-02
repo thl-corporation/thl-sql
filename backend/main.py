@@ -97,7 +97,10 @@ def init_metadata_db():
         conn.close()
 
 # Initialize DB on startup
-init_metadata_db()
+try:
+    init_metadata_db()
+except Exception as e:
+    print(f"Startup Warning: Could not initialize database: {e}")
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
@@ -258,6 +261,7 @@ def delete_client(client_id: int, username: str = Depends(get_current_username))
         # Drop Database
         # Note: Need to terminate connections first usually, but for now simple drop
         # Force drop by terminating backends
+        print(f"Terminating connections for {db_name}...")
         cur.execute(sql.SQL("""
             SELECT pg_terminate_backend(pg_stat_activity.pid)
             FROM pg_stat_activity
@@ -265,12 +269,20 @@ def delete_client(client_id: int, username: str = Depends(get_current_username))
             AND pid <> pg_backend_pid();
         """).format(sql.Literal(db_name)))
         
+        print(f"Dropping database {db_name}...")
         cur.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(db_name)))
         
+        # Verify if database is really gone
+        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
+        if cur.fetchone():
+            raise Exception(f"Failed to drop database {db_name}. It still exists in PostgreSQL.")
+
         # Drop User
+        print(f"Dropping user {db_user}...")
         cur.execute(sql.SQL("DROP USER IF EXISTS {}").format(sql.Identifier(db_user)))
         
         # Remove from metadata
+        print(f"Removing metadata for client {client_id}...")
         cur.execute("DELETE FROM managed_clients WHERE id = %s", (client_id,))
         
         return {"status": "success", "message": f"Client {client_id} deleted"}
