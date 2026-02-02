@@ -160,4 +160,19 @@ def list_databases(username: str = Depends(get_current_username)):
     conn.close()
     return {"databases": dbs}
 
+@app.get("/api/stats")
+def get_stats(username: str = Depends(get_current_username)):
+    # interval=None returns immediately, comparing to last call. 
+    # First call may be 0, but subsequent calls will be accurate.
+    cpu_percent = psutil.cpu_percent(interval=None) 
+    memory = psutil.virtual_memory()
+    return {
+        "cpu": cpu_percent,
+        "memory": {
+            "total": memory.total,
+            "percent": memory.percent,
+            "used": memory.used
+        }
+    }
+
 app.mount("/static", StaticFiles(directory="static"), name="static")

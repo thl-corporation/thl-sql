@@ -41,6 +41,22 @@
     </nav>
 
     <main class="max-w-4xl mx-auto py-10 px-4 sm:px-6 lg:px-8">
+        <!-- KPI Section -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <div class="bg-white shadow rounded-lg p-4 border border-slate-200">
+                <h3 class="text-sm font-medium text-slate-500 mb-2">CPU Usage (Avg 10s)</h3>
+                <div class="relative h-40">
+                    <canvas id="cpuChart"></canvas>
+                </div>
+            </div>
+            <div class="bg-white shadow rounded-lg p-4 border border-slate-200">
+                <h3 class="text-sm font-medium text-slate-500 mb-2">Memory Usage</h3>
+                <div class="relative h-40">
+                    <canvas id="memoryChart"></canvas>
+                </div>
+            </div>
+        </div>
+
         <div class="bg-white shadow rounded-lg overflow-hidden border border-slate-200 mb-8">
             <div class="px-4 py-5 sm:p-6">
                 <h2 class="text-lg font-medium leading-6 text-slate-900 mb-4">Crear Nuevo Cliente & Base de Datos</h2>
