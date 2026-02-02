@@ -6,8 +6,12 @@ from psycopg2 import sql
 import secrets
 import string
 import os
+from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+
+# Load environment variables
+load_dotenv()
 
 app = FastAPI()
 
@@ -20,14 +24,14 @@ app.add_middleware(
 )
 
 # Configuration
-DB_HOST = "localhost"
-DB_NAME = "postgres"
-DB_USER = "postgres"
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_NAME = os.getenv("DB_NAME", "postgres")
+DB_USER = os.getenv("DB_USER", "postgres")
 
 # Auth Configuration
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "S@p0rt3"
-COOKIE_NAME = "access_token"
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "S@p0rt3")
+COOKIE_NAME = os.getenv("COOKIE_NAME", "access_token")
 # Simple token for this single-user app. In production use JWT.
 SESSION_TOKEN = "session_" + secrets.token_urlsafe(32)
 
