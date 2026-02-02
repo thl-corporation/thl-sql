@@ -1,4 +1,6 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import psycopg2
 from psycopg2 import sql
@@ -9,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
+security = HTTPBasic()
 
 app.add_middleware(
     CORSMiddleware,
@@ -18,15 +21,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuration - This should ideally come from env vars
+# Configuration
 DB_HOST = "localhost"
 DB_NAME = "postgres"
 DB_USER = "postgres"
-# Assumes 'postgres' user has passwordless peer auth locally or trusted
-# For this script to work, we might need to configure pg_hba.conf to allow 'postgres' user to connect via local socket with 'peer' or 'trust'
-# On default Ubuntu install, 'sudo -u postgres' works. 
-# We will run this app as root or use a specific system user that has DB creation rights.
-# Ideally, we create a 'db_admin' user.
+
+def get_current_username(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_username = secrets.compare_digest(credentials.username, "admin")
+    correct_password = secrets.compare_digest(credentials.password, "S@p0rt3")
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 
 class ClientRequest(BaseModel):
     client_name: str
@@ -37,10 +46,6 @@ def generate_password(length=24):
     return ''.join(secrets.choice(alphabet) for i in range(length))
 
 def get_db_connection():
-    # Connecting as postgres user (requires running as root or correct permissions)
-    # We will assume this runs on the server where 'peer' auth is allowed for root->postgres 
-    # OR we need to set a password for postgres user and use it here.
-    # Let's try to connect via Unix socket which usually allows 'postgres' user if we are running as 'postgres' system user.
     try:
         conn = psycopg2.connect(database="postgres", user="postgres", host="/var/run/postgresql")
         conn.autocommit = True
@@ -49,8 +54,13 @@ def get_db_connection():
         print(f"Connection error: {e}")
         raise HTTPException(status_code=500, detail="Could not connect to database system")
 
+@app.get("/", response_class=HTMLResponse)
+def read_root(username: str = Depends(get_current_username)):
+    with open("static/index.html", "r", encoding="utf-8") as f:
+        return f.read()
+
 @app.post("/create-client")
-def create_client(request: ClientRequest):
+def create_client(request: ClientRequest, username: str = Depends(get_current_username)):
     client_slug = request.client_name.lower().replace(" ", "_")
     db_user = f"user_{client_slug}"
     db_pass = generate_password()
@@ -69,18 +79,18 @@ def create_client(request: ClientRequest):
             sql.Identifier(db_user)
         ))
         
-        # 3. Revoke connect on database from public (optional, for security)
+        # 3. Revoke connect on database from public
         cur.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM public").format(sql.Identifier(db_name)))
         
         return {
             "status": "success",
             "connection_info": {
-                "host": "YOUR_SERVER_IP", # We should get this dynamically
+                "host": "66.55.75.32", 
                 "port": 5432,
                 "database": db_name,
                 "user": db_user,
                 "password": db_pass,
-                "connection_string": f"postgresql://{db_user}:{db_pass}@YOUR_SERVER_IP:5432/{db_name}"
+                "connection_string": f"postgresql://{db_user}:{db_pass}@66.55.75.32:5432/{db_name}"
             }
         }
     except Exception as e:
@@ -90,7 +100,7 @@ def create_client(request: ClientRequest):
         conn.close()
 
 @app.get("/list-databases")
-def list_databases():
+def list_databases(username: str = Depends(get_current_username)):
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT datname FROM pg_database WHERE datistemplate = false;")
@@ -100,5 +110,8 @@ def list_databases():
     conn.close()
     return {"databases": dbs}
 
-# Serve static files (Frontend)
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+# Mount static files ONLY for assets if needed (not root)
+# In this simple case, we serve index.html via root endpoint, 
+# so we don't strictly need static mount unless we add css/js files later.
+# We will mount it at /static just in case, but root is handled by read_root
+app.mount("/static", StaticFiles(directory="static"), name="static")
