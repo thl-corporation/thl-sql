@@ -34,7 +34,9 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", None)
 
 # Auth Configuration
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "S@p0rt3")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+if not ADMIN_PASSWORD:
+    raise ValueError("ADMIN_PASSWORD env var is required")
 COOKIE_NAME = os.getenv("COOKIE_NAME", "access_token")
 ROOT_PASSWORD = os.getenv("ROOT_PASSWORD", None)
 # Simple token for this single-user app. In production use JWT.

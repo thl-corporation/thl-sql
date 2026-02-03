@@ -1,10 +1,19 @@
 import requests
 import sys
 import time
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv(os.path.join(os.path.dirname(__file__), 'backend', '.env'))
 
 BASE_URL = "http://66.55.75.32"
-USERNAME = "admin"
-PASSWORD = "<S@p0rt3>" # Trying with brackets as provided
+USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+PASSWORD = os.getenv("ADMIN_PASSWORD")
+
+if not PASSWORD:
+    print("Error: ADMIN_PASSWORD not found in environment or .env file.")
+    sys.exit(1)
 
 def test_remote_flow():
     session = requests.Session()
