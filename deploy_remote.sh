@@ -12,6 +12,18 @@ fi
 
 systemctl restart postgresql
 
+# 1.5 Setup Firewall (UFW)
+# Ensure UFW is installed
+apt-get install -y ufw
+
+# Allow SSH, HTTP, and PostgreSQL
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 5432/tcp
+
+# Enable UFW non-interactively
+echo "y" | ufw enable
+
 # 2. Setup Python Env
 cd /var/www/pg_manager
 python3 -m venv venv
