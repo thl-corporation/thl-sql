@@ -499,11 +499,16 @@
                     ports.forEach(p => {
                         if (p.port == 5432) sqlOpen = true;
                         
+                        const isProtected = p.port == 22 || p.port == 80;
+                        const actionButton = isProtected 
+                            ? `<span class="text-xs text-slate-400 border border-transparent px-2 py-1">Protegido</span>` 
+                            : `<button onclick="closePort(${p.port}, '${p.protocol}')" class="text-xs text-red-500 hover:text-red-700 border border-red-200 rounded px-2 py-1 hover:bg-red-50 transition-colors">Cerrar</button>`;
+
                         const li = document.createElement('li');
                         li.className = "py-2 flex justify-between items-center";
                         li.innerHTML = `
                             <span class="text-slate-700 font-mono">${p.port}/${p.protocol}</span>
-                            <button onclick="closePort(${p.port}, '${p.protocol}')" class="text-xs text-red-500 hover:text-red-700 border border-red-200 rounded px-2 py-1 hover:bg-red-50 transition-colors">Cerrar</button>
+                            ${actionButton}
                         `;
                         list.appendChild(li);
                     });
