@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 # Load environment variables
 load_dotenv()
 
-app = FastAPI()
+app = FastAPI(title="PostgreSQL Manager", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
