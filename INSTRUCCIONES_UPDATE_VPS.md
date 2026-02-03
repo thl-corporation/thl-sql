@@ -1,28 +1,46 @@
-# Instrucciones para actualizar el VPS
+# Guía de Actualización Automática del VPS
 
-Dado que no tengo acceso SSH directo configurado desde este entorno local para ejecutar comandos en tu VPS automáticamente, he subido los cambios al repositorio.
+Este repositorio está configurado para permitir actualizaciones directas al servidor VPS mediante comandos SSH remotos, utilizando las llaves almacenadas en `ssh_keys/`.
 
-Por favor, conecta a tu VPS mediante SSH y ejecuta los siguientes comandos para actualizar la aplicación:
+## 🚀 Comando de Actualización Rápida
+
+Para desplegar los últimos cambios de la rama `main` al servidor, ejecuta este comando desde tu terminal local (PowerShell o Bash) en la raíz del proyecto:
 
 ```bash
-# 1. Conectar al VPS (usa tu comando habitual)
-# ssh root@<TU_IP_VPS>
-
-# 2. Ir al directorio del proyecto
-cd /var/www/pg_manager
-
-# 3. Traer los últimos cambios (Pull)
-git pull origin main
-
-# 4. Reiniciar el servicio para aplicar los cambios
-systemctl restart pg_manager
-
-# (Opcional) Si quieres ejecutar el script de auditoría en el VPS:
-# cd backend
-# source ../venv/bin/activate
-# python audit_db.py
+ssh -i ssh_keys/vps_kamatera_id_ed25519 -o StrictHostKeyChecking=no root@66.55.75.32 "cd /var/www/pg_manager && GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519_github -o StrictHostKeyChecking=no' git pull origin main && systemctl restart pg_manager"
 ```
 
-Estos cambios incluyen:
-1.  **Fix de borrado**: Ahora se fuerzan el cierre de conexiones antes de borrar una base de datos.
-2.  **Script de auditoría**: `backend/audit_db.py` para detectar y limpiar bases de datos "zombies".
+### ¿Qué hace este comando?
+1.  Conecta al VPS usando la llave privada local.
+2.  Navega a la carpeta del proyecto.
+3.  Usa la llave de despliegue configurada en el servidor para hacer `git pull` desde GitHub.
+4.  Reinicia el servicio `pg_manager` para aplicar los cambios.
+
+---
+
+## 🛠️ Actualización Manual (Paso a Paso)
+
+Si prefieres entrar al servidor y verificar manualmente:
+
+1.  **Conectar al VPS:**
+    ```bash
+    ssh -i ssh_keys/vps_kamatera_id_ed25519 root@66.55.75.32
+    ```
+
+2.  **Ejecutar la actualización:**
+    ```bash
+    cd /var/www/pg_manager
+    git pull origin main
+    systemctl restart pg_manager
+    ```
+
+3.  **Verificar estado:**
+    ```bash
+    systemctl status pg_manager
+    ```
+
+---
+
+## 🔑 Gestión de Llaves
+- **Llave Local**: `ssh_keys/vps_kamatera_id_ed25519` (Se usa para conectar TU PC -> VPS)
+- **Llave Remota**: `~/.ssh/id_ed25519_github` (Se usa para conectar VPS -> GitHub)
