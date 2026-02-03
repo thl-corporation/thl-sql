@@ -36,8 +36,53 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", None)
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "S@p0rt3")
 COOKIE_NAME = os.getenv("COOKIE_NAME", "access_token")
+ROOT_PASSWORD = os.getenv("ROOT_PASSWORD", None)
 # Simple token for this single-user app. In production use JWT.
 SESSION_TOKEN = "session_" + secrets.token_urlsafe(32)
+
+def run_sudo_command(cmd_args):
+    """
+    Run a command with sudo. 
+    If ROOT_PASSWORD is set, try using sudo -S with password.
+    Otherwise, try sudo or direct execution.
+    """
+    # 1. Try running directly (if already root)
+    try:
+        # Use full path for ufw if possible, or assume it's in PATH
+        # Common paths: /usr/sbin/ufw, /sbin/ufw
+        # We'll just use the command name and rely on PATH first
+        result = subprocess.run(cmd_args, capture_output=True, text=True)
+        if result.returncode == 0:
+            return result
+    except Exception:
+        pass
+
+    # 2. Try sudo without password (if nopasswd configured)
+    try:
+        sudo_cmd = ["sudo", "-n"] + cmd_args
+        result = subprocess.run(sudo_cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            return result
+    except Exception:
+        pass
+
+    # 3. Try sudo with password if available
+    if ROOT_PASSWORD:
+        try:
+            sudo_cmd = ["sudo", "-S"] + cmd_args
+            # Pass password to stdin
+            result = subprocess.run(
+                sudo_cmd, 
+                input=ROOT_PASSWORD + "\n", 
+                capture_output=True, 
+                text=True
+            )
+            return result
+        except Exception as e:
+            print(f"Sudo with password failed: {e}")
+            
+    # Return the last result (likely failed) or a dummy failed result
+    return subprocess.CompletedProcess(cmd_args, 1, stdout="", stderr="Command failed and no sudo method worked")
 
 class ClientRequest(BaseModel):
     client_name: str
@@ -329,15 +374,10 @@ def get_stats(username: str = Depends(get_current_username)):
 @app.get("/api/ports")
 def get_ports(username: str = Depends(get_current_username)):
     try:
-        # Check ufw status
-        cmd = ["sudo", "ufw", "status"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        # Check ufw status using helper
+        cmd = ["ufw", "status"]
+        result = run_sudo_command(cmd)
         
-        if result.returncode != 0:
-            # Fallback: try without sudo (maybe running as root)
-            cmd = ["ufw", "status"]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
         if result.returncode != 0:
              return {"status": "error", "message": "Could not get firewall status", "detail": result.stderr, "ports": []}
         
@@ -384,11 +424,8 @@ def get_ports(username: str = Depends(get_current_username)):
 @app.post("/api/ports/open")
 def open_port(req: PortRequest, username: str = Depends(get_current_username)):
     try:
-        cmd = ["sudo", "ufw", "allow", f"{req.port}/{req.protocol}"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-             cmd = ["ufw", "allow", f"{req.port}/{req.protocol}"]
-             result = subprocess.run(cmd, capture_output=True, text=True)
+        cmd = ["ufw", "allow", f"{req.port}/{req.protocol}"]
+        result = run_sudo_command(cmd)
         
         if result.returncode == 0:
             return {"status": "success", "message": f"Port {req.port}/{req.protocol} opened"}
@@ -400,11 +437,8 @@ def open_port(req: PortRequest, username: str = Depends(get_current_username)):
 @app.post("/api/ports/close")
 def close_port(req: PortRequest, username: str = Depends(get_current_username)):
     try:
-        cmd = ["sudo", "ufw", "delete", "allow", f"{req.port}/{req.protocol}"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-             cmd = ["ufw", "delete", "allow", f"{req.port}/{req.protocol}"]
-             result = subprocess.run(cmd, capture_output=True, text=True)
+        cmd = ["ufw", "delete", "allow", f"{req.port}/{req.protocol}"]
+        result = run_sudo_command(cmd)
 
         if result.returncode == 0:
              return {"status": "success", "message": f"Port {req.port}/{req.protocol} closed"}
