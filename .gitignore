@@ -5,5 +5,5 @@ venv/
 .DS_Store
 .vscode/
 .env
-backend/.env
+# backend/.env
 
