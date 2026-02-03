@@ -167,11 +167,21 @@ def login_page(request: Request):
 
 @app.post("/login")
 def login(creds: LoginRequest, response: Response):
+    # Debug logging (remove in production if needed, but useful now)
+    print(f"Login attempt for user: {creds.username}")
+    
+    if not ADMIN_PASSWORD:
+         print("CRITICAL ERROR: ADMIN_PASSWORD is not set in environment!")
+         raise HTTPException(status_code=500, detail="Server configuration error")
+
     correct_username = secrets.compare_digest(creds.username, ADMIN_USERNAME)
     correct_password = secrets.compare_digest(creds.password, ADMIN_PASSWORD)
     
     if not (correct_username and correct_password):
+        print("Login failed: Invalid credentials")
         raise HTTPException(status_code=400, detail="Usuario o contraseña incorrectos")
+    
+    print("Login successful")
     
     # Set cookie
     response.set_cookie(
