@@ -59,9 +59,10 @@
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <!-- Create Form -->
-            <div class="lg:col-span-1">
-                <div class="bg-white shadow rounded-lg overflow-hidden border border-slate-200 sticky top-6">
+            <!-- Left Column: Create Form & Port Management -->
+            <div class="lg:col-span-1 space-y-6">
+                <!-- Create Form -->
+                <div class="bg-white shadow rounded-lg overflow-hidden border border-slate-200">
                     <div class="px-4 py-5 sm:p-6">
                         <h2 class="text-lg font-medium leading-6 text-slate-900 mb-4">Crear Nuevo Cliente</h2>
                         <form id="createForm" class="space-y-6">
@@ -85,6 +86,44 @@
                                 </button>
                             </div>
                         </form>
+                    </div>
+                </div>
+
+                <!-- Port Management -->
+                <div class="bg-white shadow rounded-lg overflow-hidden border border-slate-200">
+                    <div class="px-4 py-5 sm:p-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-lg font-medium leading-6 text-slate-900">Gestión de Puertos</h2>
+                            <button onclick="fetchPorts()" class="text-xs text-brand-500 hover:text-brand-600">Actualizar</button>
+                        </div>
+                        
+                        <!-- SQL Status -->
+                        <div id="sqlPortStatus" class="mb-4 p-3 rounded-md bg-slate-50 border border-slate-200 flex justify-between items-center">
+                            <div class="flex items-center">
+                                <span class="text-2xl mr-2">🐘</span>
+                                <div>
+                                    <div class="text-sm font-medium text-slate-900">Puerto SQL (5432)</div>
+                                    <div id="sqlStatusText" class="text-xs text-slate-500">Comprobando...</div>
+                                </div>
+                            </div>
+                            <div id="sqlStatusIndicator" class="h-3 w-3 rounded-full bg-slate-300"></div>
+                        </div>
+            
+                        <!-- Add Port Form -->
+                        <form id="addPortForm" class="flex gap-2 mb-4">
+                            <input type="number" id="newPort" placeholder="Puerto" required class="block w-full rounded-md border-slate-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 sm:text-sm px-3 py-2 border">
+                            <button type="submit" class="inline-flex justify-center rounded-md border border-transparent bg-brand-500 py-2 px-4 text-sm font-medium text-white shadow-sm hover:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500">
+                                Abrir
+                            </button>
+                        </form>
+            
+                        <!-- Port List -->
+                        <div>
+                            <h3 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Puertos Abiertos</h3>
+                            <ul id="portsList" class="divide-y divide-slate-200 text-sm">
+                                <li class="py-2 text-slate-500 text-center">Cargando...</li>
+                            </ul>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -296,6 +335,11 @@
                                       <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.381a9.06 9.06 0 001.5-.124A9.06 9.06 0 0021 17.835v-3.375c0-.621-.504-1.125-1.125-1.125H17.25M6.75 21L8.377 14.977A.75.75 0 019.102 14.5h4.136a.747.747 0 01.729.96l-1.694 5.253" />
                                     </svg>
                                 </button>
+                                <button onclick="copyRowCredentials('${client.client_name}', '${client.db_name}', '${client.db_user}', '${client.db_password}')" class="text-brand-500 hover:text-brand-700" title="Copiar Toda la Fila">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 7.5V6.108c0-1.135.845-2.098 1.976-2.192.373-.03.748-.057 1.123-.08M15.75 18H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192-.373-.03-.748-.057-1.123-.08M15.75 5.25v13.5m-7.5-13.5v13.5m0-13.5h7.5m-7.5 13.5h7.5M5.25 21h13.5" />
+                                    </svg>
+                                </button>
                             </div>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
@@ -428,12 +472,129 @@
             }, 3000);
         }
 
+        // --- Port Management ---
+        async function fetchPorts() {
+            const list = document.getElementById('portsList');
+            const sqlStatusText = document.getElementById('sqlStatusText');
+            const sqlStatusIndicator = document.getElementById('sqlStatusIndicator');
+            
+            try {
+                const res = await fetch('/api/ports');
+                if (res.status === 401) return;
+                const data = await res.json();
+                
+                list.innerHTML = '';
+                
+                if (data.status === 'error') {
+                    list.innerHTML = `<li class="py-2 text-red-500 text-center text-xs">${data.message}</li>`;
+                    return;
+                }
+                
+                const ports = data.ports;
+                let sqlOpen = false;
+                
+                if (ports.length === 0) {
+                    list.innerHTML = '<li class="py-2 text-slate-500 text-center text-xs">No hay puertos abiertos</li>';
+                } else {
+                    ports.forEach(p => {
+                        if (p.port == 5432) sqlOpen = true;
+                        
+                        const li = document.createElement('li');
+                        li.className = "py-2 flex justify-between items-center";
+                        li.innerHTML = `
+                            <span class="text-slate-700 font-mono">${p.port}/${p.protocol}</span>
+                            <button onclick="closePort(${p.port}, '${p.protocol}')" class="text-xs text-red-500 hover:text-red-700 border border-red-200 rounded px-2 py-1 hover:bg-red-50 transition-colors">Cerrar</button>
+                        `;
+                        list.appendChild(li);
+                    });
+                }
+                
+                // Update SQL Status
+                if (sqlOpen) {
+                    sqlStatusText.innerText = 'Abierto al público';
+                    sqlStatusText.className = 'text-xs text-green-600 font-medium';
+                    sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]';
+                } else {
+                    sqlStatusText.innerText = 'Cerrado / Restringido';
+                    sqlStatusText.className = 'text-xs text-slate-500';
+                    sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-slate-300';
+                }
+                
+            } catch (e) {
+                console.error("Failed to fetch ports", e);
+                list.innerHTML = '<li class="py-2 text-red-500 text-center text-xs">Error de conexión</li>';
+            }
+        }
+
+        async function openPort(port, protocol = 'tcp') {
+            const btn = document.querySelector('#addPortForm button');
+            const originalText = btn.innerText;
+            btn.disabled = true;
+            btn.innerText = '...';
+            
+            try {
+                const res = await fetch('/api/ports/open', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ port: parseInt(port), protocol: protocol })
+                });
+                const data = await res.json();
+                
+                if (res.ok) {
+                    showToast(`Puerto ${port} abierto`);
+                    document.getElementById('addPortForm').reset();
+                    fetchPorts();
+                } else {
+                    alert('Error: ' + data.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            } finally {
+                btn.disabled = false;
+                btn.innerText = originalText;
+            }
+        }
+
+        async function closePort(port, protocol) {
+            if (!confirm(`¿Cerrar el puerto ${port}/${protocol}?`)) return;
+            
+            try {
+                const res = await fetch('/api/ports/close', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ port: parseInt(port), protocol: protocol })
+                });
+                
+                if (res.ok) {
+                    showToast(`Puerto ${port} cerrado`);
+                    fetchPorts();
+                } else {
+                    const data = await res.json();
+                    alert('Error: ' + data.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            }
+        }
+        
+        document.getElementById('addPortForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const port = document.getElementById('newPort').value;
+            if (port) openPort(port);
+        });
+
+        function copyRowCredentials(clientName, dbName, dbUser, dbPassword) {
+            const text = `Cliente: ${clientName}\nBase de Datos: ${dbName}\nUsuario: ${dbUser}\nContraseña: ${dbPassword}\nHost: 66.55.75.32\nPuerto: 5432\n\nConnection String: postgresql://${dbUser}:${dbPassword}@66.55.75.32:5432/${dbName}`;
+            copyToClipboard(text, 'Credenciales completas copiadas');
+        }
+
         // --- Init ---
         document.addEventListener('DOMContentLoaded', () => {
             initCharts();
             setInterval(fetchMetrics, UPDATE_INTERVAL);
             fetchMetrics();
             fetchClients(); // Load initial list
+            fetchPorts(); // Load ports
         });
 
         // --- Logout handler ---

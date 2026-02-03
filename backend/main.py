@@ -7,6 +7,8 @@ import secrets
 import string
 import os
 import psutil
+import subprocess
+import re
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -48,6 +50,10 @@ class UpdateClientRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+class PortRequest(BaseModel):
+    port: int
+    protocol: str = "tcp"
 
 def get_current_username(request: Request):
     token = request.cookies.get(COOKIE_NAME)
@@ -319,5 +325,92 @@ def get_stats(username: str = Depends(get_current_username)):
             "used": memory.used
         }
     }
+
+@app.get("/api/ports")
+def get_ports(username: str = Depends(get_current_username)):
+    try:
+        # Check ufw status
+        cmd = ["sudo", "ufw", "status"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            # Fallback: try without sudo (maybe running as root)
+            cmd = ["ufw", "status"]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+        if result.returncode != 0:
+             return {"status": "error", "message": "Could not get firewall status", "detail": result.stderr, "ports": []}
+        
+        output = result.stdout
+        lines = output.splitlines()
+        
+        ports = []
+        is_active = False
+        
+        for line in lines:
+            if "Status: active" in line:
+                is_active = True
+                continue
+            
+            if "ALLOW" in line:
+                parts = line.split()
+                if len(parts) >= 2:
+                    port_proto = parts[0]
+                    # action = parts[1] # ALLOW
+                    
+                    if "/" in port_proto:
+                        p, proto = port_proto.split("/")
+                    else:
+                        p = port_proto
+                        proto = "any"
+                        
+                    # Avoid duplicates (v6)
+                    exists = False
+                    for existing in ports:
+                        if existing["port"] == p and existing["protocol"] == proto:
+                            exists = True
+                            break
+                    if not exists:
+                        ports.append({"port": p, "protocol": proto})
+
+        return {
+            "status": "active" if is_active else "inactive", 
+            "ports": ports
+        }
+    except Exception as e:
+        print(f"Error getting ports: {e}")
+        return {"status": "error", "message": str(e), "ports": []}
+
+@app.post("/api/ports/open")
+def open_port(req: PortRequest, username: str = Depends(get_current_username)):
+    try:
+        cmd = ["sudo", "ufw", "allow", f"{req.port}/{req.protocol}"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+             cmd = ["ufw", "allow", f"{req.port}/{req.protocol}"]
+             result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            return {"status": "success", "message": f"Port {req.port}/{req.protocol} opened"}
+        else:
+            raise HTTPException(status_code=500, detail=result.stderr or "Failed to open port")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/ports/close")
+def close_port(req: PortRequest, username: str = Depends(get_current_username)):
+    try:
+        cmd = ["sudo", "ufw", "delete", "allow", f"{req.port}/{req.protocol}"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+             cmd = ["ufw", "delete", "allow", f"{req.port}/{req.protocol}"]
+             result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode == 0:
+             return {"status": "success", "message": f"Port {req.port}/{req.protocol} closed"}
+        else:
+             raise HTTPException(status_code=500, detail=result.stderr or "Failed to close port")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
