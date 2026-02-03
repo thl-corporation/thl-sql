@@ -8,7 +8,15 @@ load_dotenv()
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_NAME = "postgres" # Connect to default postgres DB to manage others
 DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+
+if not DB_PASSWORD:
+    print("Error: DB_PASSWORD environment variable is not set.")
+    # Exit or raise error, but since this is a script, printing and exiting is fine.
+    # However, to keep it importable, maybe just leave it None and fail at connection time?
+    # But explicit check is better for a script.
+    pass # We'll let connection fail if it's None, or we can set a dummy value to avoid NoneType error in connect
+
 
 def get_db_connection():
     conn = psycopg2.connect(

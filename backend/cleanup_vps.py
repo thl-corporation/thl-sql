@@ -2,12 +2,20 @@ import psycopg2
 from psycopg2 import sql
 import os
 import sys
+from dotenv import load_dotenv
 
-# Hardcoded credentials matching the VPS environment
-DB_HOST = "localhost"
-DB_NAME = "postgres"
-DB_USER = "postgres"
-DB_PASSWORD = "Sup3rS3cur3P0stgr3s!"
+# Load environment variables
+load_dotenv()
+
+# Credentials from environment
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_NAME = os.getenv("DB_NAME", "postgres")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+
+if not DB_PASSWORD:
+    print("Error: DB_PASSWORD not found in environment.")
+    sys.exit(1)
 
 def get_db_connection():
     conn = psycopg2.connect(
