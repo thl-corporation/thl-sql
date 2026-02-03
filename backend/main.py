@@ -310,8 +310,7 @@ def delete_client(client_id: int, username: str = Depends(get_current_username))
         db_name, db_user = row
 
         # Drop Database
-        # Note: Need to terminate connections first usually, but for now simple drop
-        # Force drop by terminating backends
+        # Force drop by terminating backends (Deep Clean Step 1)
         print(f"Terminating connections for {db_name}...")
         cur.execute(sql.SQL("""
             SELECT pg_terminate_backend(pg_stat_activity.pid)
@@ -328,15 +327,26 @@ def delete_client(client_id: int, username: str = Depends(get_current_username))
         if cur.fetchone():
             raise Exception(f"Failed to drop database {db_name}. It still exists in PostgreSQL.")
 
-        # Drop User
-        print(f"Dropping user {db_user}...")
-        cur.execute(sql.SQL("DROP USER IF EXISTS {}").format(sql.Identifier(db_user)))
+        # Drop User (Deep Clean Step 2)
+        print(f"Checking existence of user {db_user}...")
+        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (db_user,))
+        if cur.fetchone():
+            print(f"Cleaning up user {db_user}...")
+            try:
+                # Remove any objects owned by the user in the current database (postgres)
+                # This ensures no 'zombie' objects are left behind in the main DB
+                cur.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(db_user)))
+            except Exception as e:
+                print(f"Warning during DROP OWNED: {e}")
+
+            print(f"Dropping user {db_user}...")
+            cur.execute(sql.SQL("DROP USER IF EXISTS {}").format(sql.Identifier(db_user)))
         
-        # Remove from metadata
+        # Remove from metadata (Deep Clean Step 3)
         print(f"Removing metadata for client {client_id}...")
         cur.execute("DELETE FROM managed_clients WHERE id = %s", (client_id,))
         
-        return {"status": "success", "message": f"Client {client_id} deleted"}
+        return {"status": "success", "message": f"Client {client_id} deleted (Deep Clean)"}
     except Exception as e:
         print(f"Error deleting client: {e}")
         raise HTTPException(status_code=500, detail=str(e))
