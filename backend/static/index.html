@@ -43,7 +43,7 @@
 
     <main class="max-w-6xl mx-auto py-10 px-4 sm:px-6 lg:px-8">
         <!-- KPI Section -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
             <div class="bg-white shadow rounded-lg p-4 border border-slate-200">
                 <h3 class="text-sm font-medium text-slate-500 mb-2">CPU Usage (Avg 10s)</h3>
                 <div class="relative h-40">
@@ -54,6 +54,18 @@
                 <h3 class="text-sm font-medium text-slate-500 mb-2">Memory Usage</h3>
                 <div class="relative h-40">
                     <canvas id="memoryChart"></canvas>
+                </div>
+            </div>
+            <div class="bg-white shadow rounded-lg p-4 border border-slate-200">
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="text-sm font-medium text-slate-500">Conexiones Activas</h3>
+                    <select id="dbConnectionSelect" class="text-xs border-slate-300 rounded border px-2 py-1 max-w-[150px]" onchange="updateConnectionDisplay()">
+                        <option value="all">Todas</option>
+                        <!-- Options populated by JS -->
+                    </select>
+                </div>
+                <div class="flex items-center justify-center h-40">
+                    <span id="connectionCountDisplay" class="text-5xl font-bold text-brand-500">0</span>
                 </div>
             </div>
         </div>
@@ -243,6 +255,7 @@
         };
 
         let cpuChart, memChart;
+        let lastConnectionData = {};
 
         function initCharts() {
             const cpuCanvas = document.getElementById('cpuChart');
@@ -285,6 +298,19 @@
             }
         }
 
+        function updateConnectionDisplay() {
+            const select = document.getElementById('dbConnectionSelect');
+            const display = document.getElementById('connectionCountDisplay');
+            const selectedDb = select.value;
+
+            if (selectedDb === 'all') {
+                const total = Object.values(lastConnectionData).reduce((a, b) => a + b, 0);
+                display.innerText = total;
+            } else {
+                display.innerText = lastConnectionData[selectedDb] || 0;
+            }
+        }
+
         async function fetchMetrics() {
             try {
                 const res = await fetch('/api/stats');
@@ -298,8 +324,41 @@
                     cpuData.shift();
                     cpuChart.update();
                 }
+
                 if (memChart) {
                     const memData = memChart.data.datasets[0].data;
+                    memData.push(data.memory.percent);
+                    memData.shift();
+                    memChart.update();
+                }
+
+                // Update Connections
+                if (data.connections) {
+                    lastConnectionData = data.connections;
+                    const select = document.getElementById('dbConnectionSelect');
+                    const currentSelection = select.value;
+                    
+                    // Update options if needed (simple check: length)
+                    // Or just ensure all DBs in data are in options
+                    const dbNames = Object.keys(data.connections).sort();
+                    
+                    // Check if we need to add new options
+                    dbNames.forEach(db => {
+                        if (!select.querySelector(`option[value="${db}"]`)) {
+                            const option = document.createElement('option');
+                            option.value = db;
+                            option.text = db;
+                            select.appendChild(option);
+                        }
+                    });
+
+                    updateConnectionDisplay();
+                }
+
+            } catch (err) {
+                console.error("Error fetching metrics:", err);
+            }
+        }
                     memData.push(data.memory.percent);
                     memData.shift();
                     memChart.update();

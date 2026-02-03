@@ -372,13 +372,35 @@ def get_stats(username: str = Depends(get_current_username)):
     # First call may be 0, but subsequent calls will be accurate.
     cpu_percent = psutil.cpu_percent(interval=None) 
     memory = psutil.virtual_memory()
+    
+    # Get connections per DB
+    conn = get_db_connection()
+    cur = conn.cursor()
+    db_connections = {}
+    try:
+        cur.execute("""
+            SELECT datname, count(*) 
+            FROM pg_stat_activity 
+            WHERE datname IS NOT NULL 
+            GROUP BY datname;
+        """)
+        rows = cur.fetchall()
+        for row in rows:
+            db_connections[row[0]] = row[1]
+    except Exception as e:
+        print(f"Error getting db stats: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
     return {
         "cpu": cpu_percent,
         "memory": {
             "total": memory.total,
             "percent": memory.percent,
             "used": memory.used
-        }
+        },
+        "connections": db_connections
     }
 
 @app.get("/api/ports")
