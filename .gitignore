@@ -6,6 +6,4 @@ venv/
 .vscode/
 .env
 backend/.env
-# SSH Keys (Private key ignored for security)
-ssh_keys/vps_kamatera_id_ed25519
 
