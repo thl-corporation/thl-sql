@@ -338,11 +338,8 @@
                     const select = document.getElementById('dbConnectionSelect');
                     const currentSelection = select.value;
                     
-                    // Update options if needed (simple check: length)
-                    // Or just ensure all DBs in data are in options
                     const dbNames = Object.keys(data.connections).sort();
                     
-                    // Check if we need to add new options
                     dbNames.forEach(db => {
                         if (!select.querySelector(`option[value="${db}"]`)) {
                             const option = document.createElement('option');
@@ -357,14 +354,6 @@
 
             } catch (err) {
                 console.error("Error fetching metrics:", err);
-            }
-        }
-                    memData.push(data.memory.percent);
-                    memData.shift();
-                    memChart.update();
-                }
-            } catch (e) {
-                console.error("Failed to fetch metrics", e);
             }
         }
 
@@ -440,6 +429,8 @@
             
             try {
                 const res = await fetch(`/clients/${id}`, { method: 'DELETE' });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                
                 if (res.ok) {
                     showToast('Cliente eliminado correctamente');
                     fetchClients();
@@ -513,6 +504,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(data)
                 });
+                
+                if (res.status === 401) { window.location.href = '/login'; return; }
 
                 if (res.ok) {
                     showToast('Cliente actualizado correctamente');
@@ -549,7 +542,7 @@
             
             try {
                 const res = await fetch('/api/ports');
-                if (res.status === 401) return;
+                if (res.status === 401) { window.location.href = '/login'; return; }
                 const data = await res.json();
                 
                 list.innerHTML = '';
@@ -612,6 +605,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ port: parseInt(port), protocol: protocol })
                 });
+                
+                if (res.status === 401) { window.location.href = '/login'; return; }
                 const data = await res.json();
                 
                 if (res.ok) {
@@ -638,6 +633,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ port: parseInt(port), protocol: protocol })
                 });
+                
+                if (res.status === 401) { window.location.href = '/login'; return; }
                 
                 if (res.ok) {
                     showToast(`Puerto ${port} cerrado`);
