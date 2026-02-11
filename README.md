@@ -6,12 +6,14 @@ Panel web para administrar un servidor PostgreSQL y el firewall del VPS.
 - Crear y eliminar bases de datos y usuarios
 - Listado de clientes y métricas del servidor (CPU, RAM, conexiones)
 - Apertura y cierre de puertos vía UFW
+- Acceso SQL por IP (gestión de reglas UFW para 5432)
 - UI con gráficas y panel de operaciones
 
 ## Requisitos de negocio
 - Crear y eliminar bases de datos y usuarios
 - Poner bases de datos en reposo o “pausa”
 - Abrir y cerrar puertos del servidor
+- Controlar acceso SQL por IP
 - Panel con gráficas y listados
 
 ## Estado respecto a los requisitos
@@ -19,6 +21,7 @@ Panel web para administrar un servidor PostgreSQL y el firewall del VPS.
 - Abrir/cerrar puertos: Implementado
 - Gráficas y listados: Implementado
 - Pausar/Reanudar DB: Implementado
+- Acceso SQL por IP: Implementado
 
 ## Cómo ejecutar en local
 1. Crear un entorno virtual y activar:
@@ -47,6 +50,7 @@ Configuración recomendada:
 - COOKIE_SECURE
 - PUBLIC_DB_HOST, PUBLIC_DB_PORT
 - LOGIN_RATE_LIMIT, LOGIN_RATE_WINDOW_SEC
+- ALLOWED_PORTS
 
 ## Endpoints principales
 - GET /login
@@ -62,6 +66,9 @@ Configuración recomendada:
 - GET /api/ports
 - POST /api/ports/open
 - POST /api/ports/close
+- GET /api/sql-access
+- POST /api/sql-access/allow
+- POST /api/sql-access/revoke
 - GET /api/config
 
 ## Pausar bases de datos (implementado)
@@ -75,4 +82,5 @@ La reactivación invierte esos pasos (GRANT CONNECT, etc.).
 - Limitar ALLOWED_ORIGINS a https://sql.thlcorporation.com
 - Configurar COOKIE_SECURE=true
 - Evitar ROOT_PASSWORD en procesos web; usar sudoers con comandos permitidos
+- Gestionar el puerto 5432 solo por IP y evitar apertura pública
 - Validar y sanitizar entradas que se muestran en la UI

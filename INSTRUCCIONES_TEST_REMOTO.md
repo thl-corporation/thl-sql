@@ -10,3 +10,4 @@ Este script intenta conectar al servidor remoto para verificar que la creación 
    ```bash
    python verify_remote.py
    ```
+5. Validar manualmente el acceso SQL por IP en el panel si es necesario.

@@ -49,6 +49,7 @@ Si prefieres entrar al servidor y verificar manualmente:
 - Usar HTTPS con certificados válidos en Nginx para sql.thlcorporation.com
 - Configurar COOKIE_SECURE=true en el servicio
 - Limitar ALLOWED_ORIGINS a https://sql.thlcorporation.com
+- Mantener ALLOWED_PORTS sin 5432 y gestionar SQL por IP desde el panel
 
 ## ✅ Verificación rápida post-deploy
 1. Probar acceso web:
@@ -57,3 +58,5 @@ Si prefieres entrar al servidor y verificar manualmente:
    ```bash
    python verify_remote.py
    ```
+3. Validar acceso SQL por IP:
+   - Ingresar al panel y revisar “Acceso SQL por IP”
