@@ -17,6 +17,10 @@ if not PASSWORD:
 
 def test_remote_flow():
     session = requests.Session()
+
+    def get_csrf_headers():
+        token = session.cookies.get("csrf_token")
+        return {"X-CSRF-Token": token} if token else {}
     
     print(f"1. Conectando a {BASE_URL}...")
     try:
@@ -48,7 +52,7 @@ def test_remote_flow():
         existing = next((c for c in clients if c['db_name'] == test_db), None)
         if existing:
             print(f"   La base de datos de prueba {test_db} ya existe. Eliminándola primero...")
-            resp = session.delete(f"{BASE_URL}/clients/{existing['id']}")
+        resp = session.delete(f"{BASE_URL}/clients/{existing['id']}", headers=get_csrf_headers())
             if resp.status_code != 200:
                 print(f"ERROR: No se pudo limpiar la base de datos de prueba existente. Status: {resp.status_code}")
                 return False
@@ -60,7 +64,7 @@ def test_remote_flow():
             "client_name": "Test Client Remote",
             "db_name": test_db
         }
-        resp = session.post(f"{BASE_URL}/create-client", json=create_payload)
+        resp = session.post(f"{BASE_URL}/create-client", json=create_payload, headers=get_csrf_headers())
         if resp.status_code != 200:
             print(f"ERROR: Falló la creación. Status: {resp.status_code}, Body: {resp.text}")
             return False
@@ -83,7 +87,7 @@ def test_remote_flow():
         
         # Delete
         print(f"3. Eliminando base de datos {test_db} (Probando el fix de conexiones)...")
-        resp = session.delete(f"{BASE_URL}/clients/{client_id}")
+        resp = session.delete(f"{BASE_URL}/clients/{client_id}", headers=get_csrf_headers())
         
         if resp.status_code == 200:
             print("   Eliminación reportada como exitosa por el servidor.")

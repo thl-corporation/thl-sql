@@ -107,19 +107,19 @@
                             <div>
                                 <label for="clientName" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nombre Cliente</label>
                                 <div class="mt-1">
-                                    <input type="text" id="clientName" placeholder="Ej: Tienda Online" required class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
+                                    <input type="text" id="clientName" placeholder="Ej: Tienda Online" required maxlength="80" pattern="[A-Za-z0-9 _-]{1,80}" class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
                                 </div>
                             </div>
 
                             <div>
                                 <label for="dbName" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nombre Base de Datos</label>
                                 <div class="mt-1">
-                                    <input type="text" id="dbName" placeholder="Ej: ecommerce_db" required class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
+                                    <input type="text" id="dbName" placeholder="Ej: ecommerce_db" required maxlength="63" pattern="[A-Za-z0-9_]{1,63}" class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
                                 </div>
                             </div>
 
                             <div>
-                                <button type="submit" class="inline-flex justify-center rounded-md border border-transparent bg-brand-600 py-2 px-4 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/60 focus:ring-offset-2 focus:ring-offset-white dark:focus:ring-offset-slate-950 transition-colors w-full">
+                            <button type="submit" id="createClientButton" class="inline-flex justify-center rounded-md border border-transparent bg-brand-600 py-2 px-4 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/60 focus:ring-offset-2 focus:ring-offset-white dark:focus:ring-offset-slate-950 transition-colors w-full">
                                     Generar Accesos
                                 </button>
                             </div>
@@ -132,7 +132,7 @@
                     <div class="px-4 py-5 sm:p-6">
                         <div class="flex justify-between items-center mb-4">
                             <h2 class="text-lg font-semibold leading-6 text-slate-900 dark:text-slate-100">Gestión de Puertos</h2>
-                            <button onclick="fetchPorts()" class="text-xs text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white">Actualizar</button>
+                            <button id="refreshPortsButton" class="text-xs text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white">Actualizar</button>
                         </div>
                         
                         <!-- SQL Status -->
@@ -150,7 +150,7 @@
                         <!-- Add Port Form -->
                         <form id="addPortForm" class="flex gap-2 mb-4">
                             <input type="number" id="newPort" placeholder="Puerto" required class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
-                            <button type="submit" class="inline-flex justify-center rounded-md border border-transparent bg-brand-600 py-2 px-4 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/60">
+                            <button type="submit" id="openPortButton" class="inline-flex justify-center rounded-md border border-transparent bg-brand-600 py-2 px-4 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/60">
                                 Abrir
                             </button>
                         </form>
@@ -222,7 +222,7 @@
                     <input type="hidden" id="editClientId">
                     <div class="mb-4">
                         <label for="editClientName" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nombre Cliente</label>
-                        <input type="text" id="editClientName" class="mt-1 block w-full border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-brand-500/30 focus:border-brand-500 sm:text-sm">
+                        <input type="text" id="editClientName" maxlength="80" pattern="[A-Za-z0-9 _-]{1,80}" class="mt-1 block w-full border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-brand-500/30 focus:border-brand-500 sm:text-sm">
                     </div>
                     <div class="mb-4">
                         <label for="editClientPassword" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nueva Contraseña (Opcional)</label>
@@ -236,7 +236,7 @@
                 </div>
             </div>
             <div class="mt-5 sm:mt-6 sm:grid sm:grid-cols-2 sm:gap-3 sm:grid-flow-row-dense">
-                <button type="button" onclick="saveClientChanges()" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-brand-600 text-base font-semibold text-white hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500/60 sm:col-start-2 sm:text-sm">
+                <button type="button" id="saveClientButton" onclick="saveClientChanges()" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-brand-600 text-base font-semibold text-white hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500/60 sm:col-start-2 sm:text-sm">
                     Guardar
                 </button>
                 <button type="button" onclick="closeEditModal()" class="mt-3 w-full inline-flex justify-center rounded-md border border-slate-300 dark:border-slate-700 shadow-sm px-4 py-2 bg-white dark:bg-slate-950 text-base font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500/60 sm:mt-0 sm:col-start-1 sm:text-sm">
@@ -474,51 +474,136 @@
                 }
 
                 clients.forEach(client => {
+                    const clientName = String(client.client_name ?? '');
+                    const dbName = String(client.db_name ?? '');
+                    const dbUser = String(client.db_user ?? '');
+                    const isPaused = Boolean(client.paused);
+
                     const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">
-                            <div class="flex items-center space-x-3">
-                                <button onclick="copyRowCredentials('${client.client_name}', '${client.db_name}', '${client.db_user}')" class="text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white" title="Copiar Datos">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 7.5V6.108c0-1.135.845-2.098 1.976-2.192.373-.03.748-.057 1.123-.08M15.75 18H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192-.373-.03-.748-.057-1.123-.08M15.75 5.25v13.5m-7.5-13.5v13.5m0-13.5h7.5m-7.5 13.5h7.5M5.25 21h13.5" />
-                                    </svg>
-                                </button>
-                                <button onclick="shareRowCredentials('${client.client_name}', '${client.db_name}', '${client.db_user}')" class="text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white" title="Compartir">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
-                                    </svg>
-                                </button>
-                            </div>
-                        </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900 dark:text-slate-100">${client.client_name}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">${client.db_name}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400 font-mono">
-                            <div class="flex items-center space-x-2">
-                                <span class="bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-xs text-slate-700 dark:text-slate-100">User: ${client.db_user}</span>
-                                <span class="bg-slate-50 dark:bg-slate-900 px-2 py-1 rounded text-xs text-slate-500 dark:text-slate-400">Contraseña: solo en creación</span>
-                            </div>
-                        </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                            <div class="flex justify-end space-x-2">
-                                <button onclick="openEditModal(${client.id}, '${client.client_name}')" class="text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white flex items-center">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4 mr-1">
-                                      <path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
-                                    </svg>
-                                    Editar
-                                </button>
-                                <button onclick="deleteClient(${client.id})" class="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 flex items-center">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4 mr-1">
-                                      <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                                    </svg>
-                                    Borrar
-                                </button>
-                            </div>
-                        </td>
-                    `;
+
+                    const actionsTd = document.createElement('td');
+                    actionsTd.className = "px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400";
+                    const actionsDiv = document.createElement('div');
+                    actionsDiv.className = "flex items-center space-x-3";
+
+                    const copyBtn = document.createElement('button');
+                    copyBtn.className = "text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white";
+                    copyBtn.title = "Copiar Datos";
+                    copyBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 7.5V6.108c0-1.135.845-2.098 1.976-2.192.373-.03.748-.057 1.123-.08M15.75 18H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192-.373-.03-.748-.057-1.123-.08M15.75 5.25v13.5m-7.5-13.5v13.5m0-13.5h7.5m-7.5 13.5h7.5M5.25 21h13.5" /></svg>';
+                    copyBtn.addEventListener('click', () => copyRowCredentials(clientName, dbName, dbUser));
+
+                    const shareBtn = document.createElement('button');
+                    shareBtn.className = "text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white";
+                    shareBtn.title = "Compartir";
+                    shareBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" /></svg>';
+                    shareBtn.addEventListener('click', () => shareRowCredentials(clientName, dbName, dbUser));
+
+                    actionsDiv.appendChild(copyBtn);
+                    actionsDiv.appendChild(shareBtn);
+                    actionsTd.appendChild(actionsDiv);
+
+                    const nameTd = document.createElement('td');
+                    nameTd.className = "px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900 dark:text-slate-100";
+                    nameTd.textContent = clientName;
+
+                    const dbTd = document.createElement('td');
+                    dbTd.className = "px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400";
+                    const dbNameSpan = document.createElement('div');
+                    dbNameSpan.textContent = dbName;
+                    const statusSpan = document.createElement('span');
+                    statusSpan.className = `inline-flex items-center mt-2 px-2 py-0.5 rounded-full text-xs font-medium ${isPaused ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-200' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-200'}`;
+                    statusSpan.textContent = isPaused ? 'Pausada' : 'Activa';
+                    dbTd.appendChild(dbNameSpan);
+                    dbTd.appendChild(statusSpan);
+
+                    const userTd = document.createElement('td');
+                    userTd.className = "px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400 font-mono";
+                    const userDiv = document.createElement('div');
+                    userDiv.className = "flex items-center space-x-2";
+                    const userSpan = document.createElement('span');
+                    userSpan.className = "bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-xs text-slate-700 dark:text-slate-100";
+                    userSpan.textContent = `User: ${dbUser}`;
+                    const pwdSpan = document.createElement('span');
+                    pwdSpan.className = "bg-slate-50 dark:bg-slate-900 px-2 py-1 rounded text-xs text-slate-500 dark:text-slate-400";
+                    pwdSpan.textContent = "Contraseña: solo en creación";
+                    userDiv.appendChild(userSpan);
+                    userDiv.appendChild(pwdSpan);
+                    userTd.appendChild(userDiv);
+
+                    const actionTd = document.createElement('td');
+                    actionTd.className = "px-6 py-4 whitespace-nowrap text-right text-sm font-medium";
+                    const actionDiv = document.createElement('div');
+                    actionDiv.className = "flex justify-end space-x-2";
+
+                    const pauseBtn = document.createElement('button');
+                    pauseBtn.className = `${isPaused ? 'text-emerald-600 hover:text-emerald-700 dark:text-emerald-300 dark:hover:text-emerald-200' : 'text-amber-600 hover:text-amber-700 dark:text-amber-300 dark:hover:text-amber-200'} flex items-center gap-2`;
+                    pauseBtn.innerHTML = isPaused
+                        ? '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.25v13.5m4.5-13.5v13.5m4.5-13.5v13.5" /></svg>Reanudar'
+                        : '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" /></svg>Pausar';
+                    pauseBtn.addEventListener('click', () => toggleClientPause(client.id, isPaused, pauseBtn));
+
+                    const editBtn = document.createElement('button');
+                    editBtn.className = "text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white flex items-center gap-2";
+                    editBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>Editar';
+                    editBtn.addEventListener('click', () => openEditModal(client.id, clientName));
+
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = "text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 flex items-center gap-2";
+                    deleteBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>Borrar';
+                    deleteBtn.addEventListener('click', () => deleteClient(client.id));
+
+                    actionDiv.appendChild(pauseBtn);
+                    actionDiv.appendChild(editBtn);
+                    actionDiv.appendChild(deleteBtn);
+                    actionTd.appendChild(actionDiv);
+
+                    tr.appendChild(actionsTd);
+                    tr.appendChild(nameTd);
+                    tr.appendChild(dbTd);
+                    tr.appendChild(userTd);
+                    tr.appendChild(actionTd);
+
                     tbody.appendChild(tr);
                 });
             } catch (e) {
                 console.error("Failed to fetch clients", e);
+            }
+        }
+
+        function setActionButtonLoading(button, isLoading, label) {
+            if (isLoading) {
+                if (!button.dataset.original) {
+                    button.dataset.original = button.innerHTML;
+                }
+                button.disabled = true;
+                button.classList.add('opacity-60', 'cursor-not-allowed');
+                button.innerHTML = `<span class="flex items-center gap-2"><svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg><span>${label}</span></span>`;
+                return;
+            }
+            if (button.dataset.original) {
+                button.innerHTML = button.dataset.original;
+            }
+            button.disabled = false;
+            button.classList.remove('opacity-60', 'cursor-not-allowed');
+        }
+
+        async function toggleClientPause(id, isPaused, button) {
+            setActionButtonLoading(button, true, isPaused ? 'Reanudando...' : 'Pausando...');
+            try {
+                const res = await csrfFetch(`/clients/${id}/${isPaused ? 'resume' : 'pause'}`, { method: 'POST' });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+
+                if (res.ok) {
+                    showToast(isPaused ? 'Base de datos reanudada' : 'Base de datos pausada');
+                    fetchClients();
+                } else {
+                    const data = await res.json();
+                    alert('Error: ' + data.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            } finally {
+                setActionButtonLoading(button, false);
             }
         }
 
@@ -590,6 +675,7 @@
             const id = document.getElementById('editClientId').value;
             const name = document.getElementById('editClientName').value;
             const password = document.getElementById('editClientPassword').value;
+            const saveButton = document.getElementById('saveClientButton');
 
             if (!name) return alert('El nombre es requerido');
 
@@ -597,6 +683,9 @@
             if (password) data.new_password = password;
 
             try {
+                if (saveButton) {
+                    setActionButtonLoading(saveButton, true, 'Guardando...');
+                }
                 const res = await csrfFetch(`/clients/${id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
@@ -615,6 +704,10 @@
                 }
             } catch (e) {
                 alert('Error de conexión');
+            } finally {
+                if (saveButton) {
+                    setActionButtonLoading(saveButton, false);
+                }
             }
         }
 
@@ -658,18 +751,29 @@
                 } else {
                     ports.forEach(p => {
                         if (p.port == 5432) sqlOpen = true;
-                        
-                        const isProtected = p.port == 22 || p.port == 80;
-                const actionButton = p.port === 5432 && p.protocol === 'TCP'
-                            ? `<span class="text-xs text-slate-400 dark:text-slate-500">Principal</span>`
-                            : `<button onclick="closePort(${p.port}, '${p.protocol}')" class="text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 border border-red-200 dark:border-red-900/60 rounded px-2 py-1 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors">Cerrar</button>`;
 
                         const li = document.createElement('li');
                         li.className = "py-2 flex justify-between items-center text-slate-700 dark:text-slate-200";
-                        li.innerHTML = `
-                            <span class="font-mono">${p.port}/${p.protocol}</span>
-                            ${actionButton}
-                        `;
+
+                        const portSpan = document.createElement('span');
+                        portSpan.className = "font-mono";
+                        portSpan.textContent = `${p.port}/${p.protocol}`;
+                        li.appendChild(portSpan);
+
+                        if (p.port === 5432 && p.protocol === 'TCP') {
+                            const statusSpan = document.createElement('span');
+                            statusSpan.className = "text-xs text-slate-400 dark:text-slate-500";
+                            statusSpan.textContent = "Principal";
+                            li.appendChild(statusSpan);
+                        } else {
+                            const closeButton = document.createElement('button');
+                            closeButton.type = "button";
+                            closeButton.className = "text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 border border-red-200 dark:border-red-900/60 rounded px-2 py-1 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors";
+                            closeButton.textContent = "Cerrar";
+                            closeButton.addEventListener('click', () => closePort(p.port, p.protocol, closeButton));
+                            li.appendChild(closeButton);
+                        }
+
                         list.appendChild(li);
                     });
                 }
@@ -692,10 +796,10 @@
         }
 
         async function openPort(port, protocol = 'tcp') {
-            const btn = document.querySelector('#addPortForm button');
-            const originalText = btn.innerText;
-            btn.disabled = true;
-            btn.innerText = '...';
+            const btn = document.getElementById('openPortButton');
+            if (btn) {
+                setActionButtonLoading(btn, true, 'Abriendo...');
+            }
             
             try {
                 const res = await csrfFetch('/api/ports/open', {
@@ -717,15 +821,19 @@
             } catch (e) {
                 alert('Error de conexión');
             } finally {
-                btn.disabled = false;
-                btn.innerText = originalText;
+                if (btn) {
+                    setActionButtonLoading(btn, false);
+                }
             }
         }
 
-        async function closePort(port, protocol) {
+        async function closePort(port, protocol, button) {
             if (!confirm(`¿Cerrar el puerto ${port}/${protocol}?`)) return;
             
             try {
+                if (button) {
+                    setActionButtonLoading(button, true, 'Cerrando...');
+                }
                 const res = await csrfFetch('/api/ports/close', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -743,6 +851,10 @@
                 }
             } catch (e) {
                 alert('Error de conexión');
+            } finally {
+                if (button) {
+                    setActionButtonLoading(button, false);
+                }
             }
         }
         
@@ -783,6 +895,10 @@
             fetchMetrics();
             fetchClients(); // Load initial list
             fetchPorts(); // Load ports
+            const refreshPortsButton = document.getElementById('refreshPortsButton');
+            if (refreshPortsButton) {
+                refreshPortsButton.addEventListener('click', fetchPorts);
+            }
         });
 
         // --- Logout handler ---
@@ -794,14 +910,14 @@
         // --- Create Form handler ---
         document.getElementById('createForm').addEventListener('submit', async (e) => {
             e.preventDefault();
-            const btn = e.target.querySelector('button');
+            const btn = document.getElementById('createClientButton');
             const resultDiv = document.getElementById('result');
             const outputCode = document.getElementById('outputData');
             const resultHeader = document.getElementById('resultHeader');
             
-            const originalBtnText = btn.innerText;
-            btn.disabled = true;
-            btn.innerHTML = '<svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Procesando...';
+            if (btn) {
+                setActionButtonLoading(btn, true, 'Generando...');
+            }
             
             resultDiv.classList.add('hidden');
 
@@ -834,8 +950,9 @@
                 resultHeader.innerHTML = '<svg class="h-6 w-6 text-red-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg><h3 class="text-lg font-medium text-red-800">Error</h3>';
                 outputCode.innerText = err.message;
             } finally {
-                btn.disabled = false;
-                btn.innerText = originalBtnText;
+                if (btn) {
+                    setActionButtonLoading(btn, false);
+                }
             }
         });
     </script>

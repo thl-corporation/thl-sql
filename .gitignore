@@ -5,5 +5,7 @@ venv/
 .DS_Store
 .vscode/
 .env
+ssh_keys/
+*.pem
+*.key
 # backend/.env
-

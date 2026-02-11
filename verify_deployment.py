@@ -17,6 +17,10 @@ if not PASSWORD:
 
 session = requests.Session()
 
+def get_csrf_headers():
+    token = session.cookies.get("csrf_token")
+    return {"X-CSRF-Token": token} if token else {}
+
 def test_login():
     print(f"Testing Login to {BASE_URL}...")
     try:
@@ -48,7 +52,7 @@ def test_create_db():
     }
     
     try:
-        r = session.post(f"{BASE_URL}/create-client", json=payload)
+        r = session.post(f"{BASE_URL}/create-client", json=payload, headers=get_csrf_headers())
         
         if r.status_code == 200:
             data = r.json()
