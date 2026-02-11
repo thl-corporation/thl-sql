@@ -1,18 +1,33 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" class="h-full">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PostgreSQL Manager</title>
+    <title>THL SQL Manager</title>
+    <script>
+        (function() {
+            const stored = localStorage.getItem('theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const theme = stored || (prefersDark ? 'dark' : 'light');
+            if (theme === 'dark') {
+                document.documentElement.classList.add('dark');
+            }
+        })();
+    </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
+            darkMode: 'class',
             theme: {
                 extend: {
                     colors: {
                         brand: {
-                            500: '#336791',
-                            600: '#254a6d',
+                            50: '#f0f7ff',
+                            100: '#d9e9ff',
+                            500: '#2f6bb0',
+                            600: '#245892',
+                            700: '#1f4a7a',
+                            900: '#14304f',
                         }
                     }
                 }
@@ -20,17 +35,28 @@
         }
     </script>
 </head>
-<body class="bg-slate-50 text-slate-800 min-h-screen">
-    <nav class="bg-white shadow-sm border-b border-slate-200">
+<body class="bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 min-h-screen antialiased">
+    <nav class="bg-white/80 dark:bg-slate-900/80 backdrop-blur border-b border-slate-200/70 dark:border-slate-800/70">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between h-16">
                 <div class="flex items-center">
-                    <span class="text-2xl mr-2">🐘</span>
-                    <h1 class="text-xl font-bold text-brand-500">THL SQL Manager</h1>
+                    <h1 class="text-xl font-semibold text-slate-900 dark:text-slate-100 tracking-tight">THL SQL Manager</h1>
                 </div>
-                <div class="flex items-center space-x-4">
-                    <span id="clock" class="text-sm font-mono text-slate-500"></span>
-                    <button id="logoutBtn" class="text-slate-600 hover:text-red-600 font-medium px-3 py-2 rounded-md text-sm transition-colors flex items-center">
+                <div class="flex items-center gap-3">
+                    <span id="clock" class="text-sm font-mono text-slate-500 dark:text-slate-400"></span>
+                    <button id="themeToggle" class="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" aria-label="Cambiar tema" aria-pressed="false">
+                        <span id="themeIconSun" class="hidden">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25M6.364 6.364l1.591 1.591M3 12h2.25M6.364 17.636l1.591-1.591M12 18.75V21M17.636 17.636l-1.591-1.591M18.75 12H21M17.636 6.364l-1.591 1.591M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                        </span>
+                        <span id="themeIconMoon">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1111.21 3a7 7 0 109.79 9.79z" />
+                            </svg>
+                        </span>
+                    </button>
+                    <button id="logoutBtn" class="text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 font-medium px-3 py-2 rounded-lg text-sm transition-colors flex items-center border border-transparent hover:border-red-200/60 dark:hover:border-red-400/30">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 mr-1">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75" />
                         </svg>
@@ -41,31 +67,31 @@
         </div>
     </nav>
 
-    <main class="max-w-6xl mx-auto py-10 px-4 sm:px-6 lg:px-8">
+    <main class="max-w-7xl mx-auto py-10 px-4 sm:px-6 lg:px-8">
         <!-- KPI Section -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <div class="bg-white shadow rounded-lg p-4 border border-slate-200">
-                <h3 class="text-sm font-medium text-slate-500 mb-2">CPU Usage (Avg 10s)</h3>
+            <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl p-4 border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+                <h3 class="text-sm font-medium text-slate-500 dark:text-slate-400 mb-2">CPU Usage (Avg 10s)</h3>
                 <div class="relative h-40">
                     <canvas id="cpuChart"></canvas>
                 </div>
             </div>
-            <div class="bg-white shadow rounded-lg p-4 border border-slate-200">
-                <h3 class="text-sm font-medium text-slate-500 mb-2">Memory Usage</h3>
+            <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl p-4 border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+                <h3 class="text-sm font-medium text-slate-500 dark:text-slate-400 mb-2">Memory Usage</h3>
                 <div class="relative h-40">
                     <canvas id="memoryChart"></canvas>
                 </div>
             </div>
-            <div class="bg-white shadow rounded-lg p-4 border border-slate-200">
+            <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl p-4 border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
                 <div class="flex justify-between items-center mb-2">
-                    <h3 class="text-sm font-medium text-slate-500">Conexiones Activas</h3>
-                    <select id="dbConnectionSelect" class="text-xs border-slate-300 rounded border px-2 py-1 max-w-[150px]" onchange="updateConnectionDisplay()">
+                    <h3 class="text-sm font-medium text-slate-500 dark:text-slate-400">Conexiones Activas</h3>
+                    <select id="dbConnectionSelect" class="text-xs border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-200 rounded-md border px-2 py-1 max-w-[150px] focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/60" onchange="updateConnectionDisplay()">
                         <option value="all">Todas</option>
                         <!-- Options populated by JS -->
                     </select>
                 </div>
                 <div class="flex items-center justify-center h-40">
-                    <span id="connectionCountDisplay" class="text-5xl font-bold text-brand-500">0</span>
+                    <span id="connectionCountDisplay" class="text-5xl font-bold text-brand-600 dark:text-brand-100">0</span>
                 </div>
             </div>
         </div>
@@ -74,26 +100,26 @@
             <!-- Left Column: Create Form & Port Management -->
             <div class="lg:col-span-1 space-y-6">
                 <!-- Create Form -->
-                <div class="bg-white shadow rounded-lg overflow-hidden border border-slate-200">
+                <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl overflow-hidden border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
                     <div class="px-4 py-5 sm:p-6">
-                        <h2 class="text-lg font-medium leading-6 text-slate-900 mb-4">Crear Nuevo Cliente</h2>
+                        <h2 class="text-lg font-semibold leading-6 text-slate-900 dark:text-slate-100 mb-4">Crear Nuevo Cliente</h2>
                         <form id="createForm" class="space-y-6">
                             <div>
-                                <label for="clientName" class="block text-sm font-medium text-slate-700">Nombre Cliente</label>
+                                <label for="clientName" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nombre Cliente</label>
                                 <div class="mt-1">
-                                    <input type="text" id="clientName" placeholder="Ej: Tienda Online" required class="block w-full rounded-md border-slate-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 sm:text-sm px-3 py-2 border">
+                                    <input type="text" id="clientName" placeholder="Ej: Tienda Online" required class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
                                 </div>
                             </div>
 
                             <div>
-                                <label for="dbName" class="block text-sm font-medium text-slate-700">Nombre Base de Datos</label>
+                                <label for="dbName" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nombre Base de Datos</label>
                                 <div class="mt-1">
-                                    <input type="text" id="dbName" placeholder="Ej: ecommerce_db" required class="block w-full rounded-md border-slate-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 sm:text-sm px-3 py-2 border">
+                                    <input type="text" id="dbName" placeholder="Ej: ecommerce_db" required class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
                                 </div>
                             </div>
 
                             <div>
-                                <button type="submit" class="inline-flex justify-center rounded-md border border-transparent bg-brand-500 py-2 px-4 text-sm font-medium text-white shadow-sm hover:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 transition-colors w-full">
+                                <button type="submit" class="inline-flex justify-center rounded-md border border-transparent bg-brand-600 py-2 px-4 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/60 focus:ring-offset-2 focus:ring-offset-white dark:focus:ring-offset-slate-950 transition-colors w-full">
                                     Generar Accesos
                                 </button>
                             </div>
@@ -102,38 +128,38 @@
                 </div>
 
                 <!-- Port Management -->
-                <div class="bg-white shadow rounded-lg overflow-hidden border border-slate-200">
+                <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl overflow-hidden border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
                     <div class="px-4 py-5 sm:p-6">
                         <div class="flex justify-between items-center mb-4">
-                            <h2 class="text-lg font-medium leading-6 text-slate-900">Gestión de Puertos</h2>
-                            <button onclick="fetchPorts()" class="text-xs text-brand-500 hover:text-brand-600">Actualizar</button>
+                            <h2 class="text-lg font-semibold leading-6 text-slate-900 dark:text-slate-100">Gestión de Puertos</h2>
+                            <button onclick="fetchPorts()" class="text-xs text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white">Actualizar</button>
                         </div>
                         
                         <!-- SQL Status -->
-                        <div id="sqlPortStatus" class="mb-4 p-3 rounded-md bg-slate-50 border border-slate-200 flex justify-between items-center">
+                        <div id="sqlPortStatus" class="mb-4 p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 flex justify-between items-center">
                             <div class="flex items-center">
-                                <span class="text-2xl mr-2">🐘</span>
+                                <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-900/30 dark:text-brand-100 mr-3">🐘</span>
                                 <div>
-                                    <div class="text-sm font-medium text-slate-900">Puerto SQL (5432)</div>
-                                    <div id="sqlStatusText" class="text-xs text-slate-500">Comprobando...</div>
+                                    <div class="text-sm font-medium text-slate-900 dark:text-slate-100">Puerto SQL (5432)</div>
+                                    <div id="sqlStatusText" class="text-xs text-slate-500 dark:text-slate-400">Comprobando...</div>
                                 </div>
                             </div>
-                            <div id="sqlStatusIndicator" class="h-3 w-3 rounded-full bg-slate-300"></div>
+                            <div id="sqlStatusIndicator" class="h-3 w-3 rounded-full bg-slate-300 dark:bg-slate-700"></div>
                         </div>
             
                         <!-- Add Port Form -->
                         <form id="addPortForm" class="flex gap-2 mb-4">
-                            <input type="number" id="newPort" placeholder="Puerto" required class="block w-full rounded-md border-slate-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 sm:text-sm px-3 py-2 border">
-                            <button type="submit" class="inline-flex justify-center rounded-md border border-transparent bg-brand-500 py-2 px-4 text-sm font-medium text-white shadow-sm hover:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500">
+                            <input type="number" id="newPort" placeholder="Puerto" required class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
+                            <button type="submit" class="inline-flex justify-center rounded-md border border-transparent bg-brand-600 py-2 px-4 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/60">
                                 Abrir
                             </button>
                         </form>
             
                         <!-- Port List -->
                         <div>
-                            <h3 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Puertos Abiertos</h3>
-                            <ul id="portsList" class="divide-y divide-slate-200 text-sm">
-                                <li class="py-2 text-slate-500 text-center">Cargando...</li>
+                            <h3 class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Puertos Abiertos</h3>
+                            <ul id="portsList" class="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
+                                <li class="py-2 text-slate-500 dark:text-slate-400 text-center">Cargando...</li>
                             </ul>
                         </div>
                     </div>
@@ -142,25 +168,25 @@
 
             <!-- List Clients -->
             <div class="lg:col-span-2">
-                <div class="bg-white shadow rounded-lg overflow-hidden border border-slate-200">
-                    <div class="px-4 py-5 sm:px-6 flex justify-between items-center border-b border-slate-200">
-                        <h3 class="text-lg leading-6 font-medium text-slate-900">Bases de Datos Gestionadas</h3>
-                        <button onclick="fetchClients()" class="text-sm text-brand-500 hover:text-brand-600">
+                <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl overflow-hidden border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+                    <div class="px-4 py-5 sm:px-6 flex justify-between items-center border-b border-slate-200/70 dark:border-slate-800/70">
+                        <h3 class="text-lg leading-6 font-semibold text-slate-900 dark:text-slate-100">Bases de Datos Gestionadas</h3>
+                        <button onclick="fetchClients()" class="text-sm text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white">
                             Actualizar
                         </button>
                     </div>
                     <div class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-slate-200">
-                            <thead class="bg-slate-50">
+                        <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-800">
+                            <thead class="bg-slate-50 dark:bg-slate-900/70">
                                 <tr>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider w-24">Acciones</th>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Cliente</th>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Base de Datos</th>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Credenciales</th>
-                                    <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Editar/Borrar</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider w-24">Acciones</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Cliente</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Base de Datos</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Credenciales</th>
+                                    <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Editar/Borrar</th>
                                 </tr>
                             </thead>
-                            <tbody id="clientsTableBody" class="bg-white divide-y divide-slate-200">
+                            <tbody id="clientsTableBody" class="bg-white dark:bg-slate-950/40 divide-y divide-slate-200 dark:divide-slate-800">
                                 <!-- Loaded via JS -->
                             </tbody>
                         </table>
@@ -168,18 +194,18 @@
                 </div>
                 
                 <!-- Result Box -->
-                <div id="result" class="hidden mt-6 bg-white shadow rounded-lg overflow-hidden border border-slate-200">
+                <div id="result" class="hidden mt-6 bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl overflow-hidden border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
                     <div class="px-4 py-5 sm:p-6">
                         <div id="resultHeader" class="flex items-center mb-4">
                             <!-- Icon -->
                         </div>
-                        <div class="bg-slate-50 rounded-md p-4 border border-slate-200 overflow-x-auto relative">
-                            <button onclick="copyResultCode()" class="absolute top-2 right-2 text-slate-400 hover:text-brand-500 p-1">
+                        <div class="bg-slate-50 dark:bg-slate-950/60 rounded-xl p-4 border border-slate-200 dark:border-slate-800 overflow-x-auto relative">
+                            <button onclick="copyResultCode()" class="absolute top-2 right-2 text-slate-400 hover:text-brand-600 dark:text-slate-500 dark:hover:text-brand-100 p-1">
                                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
                                   <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.381a9.06 9.06 0 001.5-.124A9.06 9.06 0 0021 17.835v-3.375c0-.621-.504-1.125-1.125-1.125H17.25M6.75 21L8.377 14.977A.75.75 0 019.102 14.5h4.136a.747.747 0 01.729.96l-1.694 5.253" />
                                 </svg>
                             </button>
-                            <code id="outputData" class="text-sm text-slate-800 font-mono whitespace-pre"></code>
+                            <code id="outputData" class="text-sm text-slate-800 dark:text-slate-100 font-mono whitespace-pre"></code>
                         </div>
                     </div>
                 </div>
@@ -188,21 +214,21 @@
     </main>
 
     <!-- Edit Modal -->
-    <div id="editModal" class="fixed inset-0 bg-slate-500 bg-opacity-75 hidden flex items-center justify-center z-50">
-        <div class="bg-white rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform transition-all sm:max-w-lg sm:w-full sm:p-6">
+    <div id="editModal" class="fixed inset-0 bg-slate-900/60 hidden flex items-center justify-center z-50 backdrop-blur-sm">
+        <div class="bg-white/90 dark:bg-slate-900/90 rounded-2xl px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl shadow-slate-900/20 transform transition-all sm:max-w-lg sm:w-full sm:p-6 border border-slate-200/70 dark:border-slate-800/70">
             <div>
-                <h3 class="text-lg leading-6 font-medium text-slate-900" id="modal-title">Editar Cliente</h3>
+                <h3 class="text-lg leading-6 font-semibold text-slate-900 dark:text-slate-100" id="modal-title">Editar Cliente</h3>
                 <div class="mt-2">
                     <input type="hidden" id="editClientId">
                     <div class="mb-4">
-                        <label for="editClientName" class="block text-sm font-medium text-slate-700">Nombre Cliente</label>
-                        <input type="text" id="editClientName" class="mt-1 block w-full border border-slate-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-brand-500 focus:border-brand-500 sm:text-sm">
+                        <label for="editClientName" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nombre Cliente</label>
+                        <input type="text" id="editClientName" class="mt-1 block w-full border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-brand-500/30 focus:border-brand-500 sm:text-sm">
                     </div>
                     <div class="mb-4">
-                        <label for="editClientPassword" class="block text-sm font-medium text-slate-700">Nueva Contraseña (Opcional)</label>
+                        <label for="editClientPassword" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nueva Contraseña (Opcional)</label>
                         <div class="flex">
-                            <input type="text" id="editClientPassword" class="mt-1 block w-full border border-slate-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-brand-500 focus:border-brand-500 sm:text-sm" placeholder="Dejar en blanco para mantener actual">
-                            <button type="button" onclick="document.getElementById('editClientPassword').value = generatePassword()" class="ml-2 mt-1 inline-flex items-center px-3 py-2 border border-slate-300 shadow-sm text-sm leading-4 font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500">
+                            <input type="text" id="editClientPassword" class="mt-1 block w-full border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-brand-500/30 focus:border-brand-500 sm:text-sm" placeholder="Dejar en blanco para mantener actual">
+                            <button type="button" onclick="document.getElementById('editClientPassword').value = generatePassword()" class="ml-2 mt-1 inline-flex items-center px-3 py-2 border border-slate-300 dark:border-slate-700 shadow-sm text-sm leading-4 font-medium rounded-md text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-950 hover:bg-slate-50 dark:hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500/60">
                                 Generar
                             </button>
                         </div>
@@ -210,10 +236,10 @@
                 </div>
             </div>
             <div class="mt-5 sm:mt-6 sm:grid sm:grid-cols-2 sm:gap-3 sm:grid-flow-row-dense">
-                <button type="button" onclick="saveClientChanges()" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-brand-600 text-base font-medium text-white hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 sm:col-start-2 sm:text-sm">
+                <button type="button" onclick="saveClientChanges()" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-brand-600 text-base font-semibold text-white hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500/60 sm:col-start-2 sm:text-sm">
                     Guardar
                 </button>
-                <button type="button" onclick="closeEditModal()" class="mt-3 w-full inline-flex justify-center rounded-md border border-slate-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 sm:mt-0 sm:col-start-1 sm:text-sm">
+                <button type="button" onclick="closeEditModal()" class="mt-3 w-full inline-flex justify-center rounded-md border border-slate-300 dark:border-slate-700 shadow-sm px-4 py-2 bg-white dark:bg-slate-950 text-base font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500/60 sm:mt-0 sm:col-start-1 sm:text-sm">
                     Cancelar
                 </button>
             </div>
@@ -221,7 +247,7 @@
     </div>
 
     <!-- Toast Notification -->
-    <div id="toast" class="fixed bottom-5 right-5 bg-slate-800 text-white px-4 py-2 rounded shadow-lg transform translate-y-20 transition-transform duration-300">
+    <div id="toast" class="fixed bottom-5 right-5 bg-slate-900/90 dark:bg-slate-800/90 text-white px-4 py-2 rounded-xl shadow-lg shadow-slate-900/20 transform translate-y-20 transition-transform duration-300">
         Mensaje copiado
     </div>
 
@@ -229,6 +255,46 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <script>
+        const themeToggle = document.getElementById('themeToggle');
+        const themeIconSun = document.getElementById('themeIconSun');
+        const themeIconMoon = document.getElementById('themeIconMoon');
+
+        function applyTheme(theme) {
+            if (theme === 'dark') {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+            localStorage.setItem('theme', theme);
+            if (themeToggle) {
+                themeToggle.setAttribute('aria-pressed', theme === 'dark');
+            }
+            if (themeIconSun && themeIconMoon) {
+                themeIconSun.classList.toggle('hidden', theme !== 'dark');
+                themeIconMoon.classList.toggle('hidden', theme === 'dark');
+            }
+        }
+
+        const storedTheme = localStorage.getItem('theme');
+        if (storedTheme) {
+            applyTheme(storedTheme);
+        } else {
+            applyTheme(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        }
+
+        if (themeToggle) {
+            themeToggle.addEventListener('click', () => {
+                const isDark = document.documentElement.classList.contains('dark');
+                applyTheme(isDark ? 'light' : 'dark');
+            });
+        }
+
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+            if (!localStorage.getItem('theme')) {
+                applyTheme(e.matches ? 'dark' : 'light');
+            }
+        });
+
         // --- Clock ---
         function updateClock() {
             const now = new Date();
@@ -403,44 +469,44 @@
                 
                 tbody.innerHTML = '';
                 if (clients.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-sm text-slate-500">No hay clientes creados</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-sm text-slate-500 dark:text-slate-400">No hay clientes creados</td></tr>';
                     return;
                 }
 
                 clients.forEach(client => {
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">
                             <div class="flex items-center space-x-3">
-                                <button onclick="copyRowCredentials('${client.client_name}', '${client.db_name}', '${client.db_user}')" class="text-brand-500 hover:text-brand-700" title="Copiar Datos">
+                                <button onclick="copyRowCredentials('${client.client_name}', '${client.db_name}', '${client.db_user}')" class="text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white" title="Copiar Datos">
                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
                                         <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 7.5V6.108c0-1.135.845-2.098 1.976-2.192.373-.03.748-.057 1.123-.08M15.75 18H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192-.373-.03-.748-.057-1.123-.08M15.75 5.25v13.5m-7.5-13.5v13.5m0-13.5h7.5m-7.5 13.5h7.5M5.25 21h13.5" />
                                     </svg>
                                 </button>
-                                <button onclick="shareRowCredentials('${client.client_name}', '${client.db_name}', '${client.db_user}')" class="text-brand-500 hover:text-brand-700" title="Compartir">
+                                <button onclick="shareRowCredentials('${client.client_name}', '${client.db_name}', '${client.db_user}')" class="text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white" title="Compartir">
                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
                                         <path stroke-linecap="round" stroke-linejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
                                     </svg>
                                 </button>
                             </div>
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">${client.client_name}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">${client.db_name}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 font-mono">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900 dark:text-slate-100">${client.client_name}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">${client.db_name}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400 font-mono">
                             <div class="flex items-center space-x-2">
-                                <span class="bg-slate-100 px-2 py-1 rounded text-xs">User: ${client.db_user}</span>
-                                <span class="bg-slate-50 px-2 py-1 rounded text-xs text-slate-500">Contraseña: solo en creación</span>
+                                <span class="bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-xs text-slate-700 dark:text-slate-100">User: ${client.db_user}</span>
+                                <span class="bg-slate-50 dark:bg-slate-900 px-2 py-1 rounded text-xs text-slate-500 dark:text-slate-400">Contraseña: solo en creación</span>
                             </div>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                             <div class="flex justify-end space-x-2">
-                                <button onclick="openEditModal(${client.id}, '${client.client_name}')" class="text-brand-600 hover:text-brand-900 flex items-center">
+                                <button onclick="openEditModal(${client.id}, '${client.client_name}')" class="text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white flex items-center">
                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4 mr-1">
                                       <path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
                                     </svg>
                                     Editar
                                 </button>
-                                <button onclick="deleteClient(${client.id})" class="text-red-600 hover:text-red-900 flex items-center">
+                                <button onclick="deleteClient(${client.id})" class="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 flex items-center">
                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4 mr-1">
                                       <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
                                     </svg>
@@ -594,14 +660,14 @@
                         if (p.port == 5432) sqlOpen = true;
                         
                         const isProtected = p.port == 22 || p.port == 80;
-                        const actionButton = isProtected 
-                            ? `<span class="text-xs text-slate-400 border border-transparent px-2 py-1">Protegido</span>` 
-                            : `<button onclick="closePort(${p.port}, '${p.protocol}')" class="text-xs text-red-500 hover:text-red-700 border border-red-200 rounded px-2 py-1 hover:bg-red-50 transition-colors">Cerrar</button>`;
+                const actionButton = p.port === 5432 && p.protocol === 'TCP'
+                            ? `<span class="text-xs text-slate-400 dark:text-slate-500">Principal</span>`
+                            : `<button onclick="closePort(${p.port}, '${p.protocol}')" class="text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 border border-red-200 dark:border-red-900/60 rounded px-2 py-1 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors">Cerrar</button>`;
 
                         const li = document.createElement('li');
-                        li.className = "py-2 flex justify-between items-center";
+                        li.className = "py-2 flex justify-between items-center text-slate-700 dark:text-slate-200";
                         li.innerHTML = `
-                            <span class="text-slate-700 font-mono">${p.port}/${p.protocol}</span>
+                            <span class="font-mono">${p.port}/${p.protocol}</span>
                             ${actionButton}
                         `;
                         list.appendChild(li);
@@ -611,12 +677,12 @@
                 // Update SQL Status
                 if (sqlOpen) {
                     sqlStatusText.innerText = 'Abierto al público';
-                    sqlStatusText.className = 'text-xs text-green-600 font-medium';
+                    sqlStatusText.className = 'text-xs text-green-600 dark:text-emerald-300 font-medium';
                     sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]';
                 } else {
                     sqlStatusText.innerText = 'Cerrado / Restringido';
-                    sqlStatusText.className = 'text-xs text-slate-500';
-                    sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-slate-300';
+                    sqlStatusText.className = 'text-xs text-slate-500 dark:text-slate-400';
+                    sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-slate-300 dark:bg-slate-700';
                 }
                 
             } catch (e) {
