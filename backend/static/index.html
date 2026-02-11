@@ -26,7 +26,7 @@
             <div class="flex justify-between h-16">
                 <div class="flex items-center">
                     <span class="text-2xl mr-2">🐘</span>
-                    <h1 class="text-xl font-bold text-brand-500">PostgreSQL Access Factory</h1>
+                    <h1 class="text-xl font-bold text-brand-500">THL SQL Manager</h1>
                 </div>
                 <div class="flex items-center space-x-4">
                     <span id="clock" class="text-sm font-mono text-slate-500"></span>
@@ -237,6 +237,42 @@
         setInterval(updateClock, 1000);
         updateClock();
 
+        let publicDbHost = 'localhost';
+        let publicDbPort = 5432;
+
+        function getCookie(name) {
+            const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+            return match ? decodeURIComponent(match[2]) : '';
+        }
+
+        function getCsrfToken() {
+            return getCookie('csrf_token');
+        }
+
+        async function csrfFetch(url, options = {}) {
+            const opts = { ...options };
+            opts.headers = { ...(options.headers || {}) };
+            const method = (opts.method || 'GET').toUpperCase();
+            if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+                opts.headers['X-CSRF-Token'] = getCsrfToken();
+            }
+            return fetch(url, opts);
+        }
+
+        async function fetchConfig() {
+            try {
+                const res = await fetch('/api/config');
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                if (res.ok) {
+                    const data = await res.json();
+                    publicDbHost = data.public_db_host || publicDbHost;
+                    publicDbPort = data.public_db_port || publicDbPort;
+                }
+            } catch (e) {
+                console.error("Failed to fetch config", e);
+            }
+        }
+
         // --- KPI Charts Configuration ---
         const CHART_HISTORY = 60; 
         const UPDATE_INTERVAL = 2000; 
@@ -376,12 +412,12 @@
                     tr.innerHTML = `
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
                             <div class="flex items-center space-x-3">
-                                <button onclick="copyRowCredentials('${client.client_name}', '${client.db_name}', '${client.db_user}', '${client.db_password}')" class="text-brand-500 hover:text-brand-700" title="Copiar Toda la Fila">
+                                <button onclick="copyRowCredentials('${client.client_name}', '${client.db_name}', '${client.db_user}')" class="text-brand-500 hover:text-brand-700" title="Copiar Datos">
                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
                                         <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 7.5V6.108c0-1.135.845-2.098 1.976-2.192.373-.03.748-.057 1.123-.08M15.75 18H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192-.373-.03-.748-.057-1.123-.08M15.75 5.25v13.5m-7.5-13.5v13.5m0-13.5h7.5m-7.5 13.5h7.5M5.25 21h13.5" />
                                     </svg>
                                 </button>
-                                <button onclick="shareRowCredentials('${client.client_name}', '${client.db_name}', '${client.db_user}', '${client.db_password}')" class="text-brand-500 hover:text-brand-700" title="Compartir">
+                                <button onclick="shareRowCredentials('${client.client_name}', '${client.db_name}', '${client.db_user}')" class="text-brand-500 hover:text-brand-700" title="Compartir">
                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
                                         <path stroke-linecap="round" stroke-linejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
                                     </svg>
@@ -393,11 +429,7 @@
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 font-mono">
                             <div class="flex items-center space-x-2">
                                 <span class="bg-slate-100 px-2 py-1 rounded text-xs">User: ${client.db_user}</span>
-                                <button onclick="copyToClipboard('${client.db_password}', 'Contraseña copiada')" class="text-brand-500 hover:text-brand-700" title="Copiar Contraseña">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
-                                      <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.381a9.06 9.06 0 001.5-.124A9.06 9.06 0 0021 17.835v-3.375c0-.621-.504-1.125-1.125-1.125H17.25M6.75 21L8.377 14.977A.75.75 0 019.102 14.5h4.136a.747.747 0 01.729.96l-1.694 5.253" />
-                                    </svg>
-                                </button>
+                                <span class="bg-slate-50 px-2 py-1 rounded text-xs text-slate-500">Contraseña: solo en creación</span>
                             </div>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
@@ -428,7 +460,7 @@
             if (!confirm('¿Estás seguro de que quieres eliminar este cliente y su base de datos? Esta acción no se puede deshacer.')) return;
             
             try {
-                const res = await fetch(`/clients/${id}`, { method: 'DELETE' });
+                const res = await csrfFetch(`/clients/${id}`, { method: 'DELETE' });
                 if (res.status === 401) { window.location.href = '/login'; return; }
                 
                 if (res.ok) {
@@ -499,7 +531,7 @@
             if (password) data.new_password = password;
 
             try {
-                const res = await fetch(`/clients/${id}`, {
+                const res = await csrfFetch(`/clients/${id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(data)
@@ -600,7 +632,7 @@
             btn.innerText = '...';
             
             try {
-                const res = await fetch('/api/ports/open', {
+                const res = await csrfFetch('/api/ports/open', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ port: parseInt(port), protocol: protocol })
@@ -628,7 +660,7 @@
             if (!confirm(`¿Cerrar el puerto ${port}/${protocol}?`)) return;
             
             try {
-                const res = await fetch('/api/ports/close', {
+                const res = await csrfFetch('/api/ports/close', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ port: parseInt(port), protocol: protocol })
@@ -654,13 +686,13 @@
             if (port) openPort(port);
         });
 
-        function copyRowCredentials(clientName, dbName, dbUser, dbPassword) {
-            const text = `Cliente: ${clientName}\nBase de Datos: ${dbName}\nUsuario: ${dbUser}\nContraseña: ${dbPassword}\nHost: 66.55.75.32\nPuerto: 5432\n\nConnection String: postgresql://${dbUser}:${dbPassword}@66.55.75.32:5432/${dbName}`;
+        function copyRowCredentials(clientName, dbName, dbUser) {
+            const text = `Cliente: ${clientName}\nBase de Datos: ${dbName}\nUsuario: ${dbUser}\nHost: ${publicDbHost}\nPuerto: ${publicDbPort}\n\nConnection String: postgresql://${dbUser}:[PASSWORD]@${publicDbHost}:${publicDbPort}/${dbName}`;
             copyToClipboard(text, 'Credenciales completas copiadas');
         }
 
-        async function shareRowCredentials(clientName, dbName, dbUser, dbPassword) {
-            const text = `Cliente: ${clientName}\nBase de Datos: ${dbName}\nUsuario: ${dbUser}\nContraseña: ${dbPassword}\nHost: 66.55.75.32\nPuerto: 5432\n\nConnection String: postgresql://${dbUser}:${dbPassword}@66.55.75.32:5432/${dbName}`;
+        async function shareRowCredentials(clientName, dbName, dbUser) {
+            const text = `Cliente: ${clientName}\nBase de Datos: ${dbName}\nUsuario: ${dbUser}\nHost: ${publicDbHost}\nPuerto: ${publicDbPort}\n\nConnection String: postgresql://${dbUser}:[PASSWORD]@${publicDbHost}:${publicDbPort}/${dbName}`;
             
             if (navigator.share) {
                 try {
@@ -679,6 +711,7 @@
 
         // --- Init ---
         document.addEventListener('DOMContentLoaded', () => {
+            fetchConfig();
             initCharts();
             setInterval(fetchMetrics, UPDATE_INTERVAL);
             fetchMetrics();
@@ -688,7 +721,7 @@
 
         // --- Logout handler ---
         document.getElementById('logoutBtn').addEventListener('click', async () => {
-            try { await fetch('/logout', { method: 'POST' }); window.location.href = '/login'; } 
+            try { await csrfFetch('/logout', { method: 'POST' }); window.location.href = '/login'; } 
             catch (err) { window.location.href = '/login'; }
         });
 
@@ -712,7 +745,7 @@
             };
 
             try {
-                const response = await fetch('/create-client', {
+                const response = await csrfFetch('/create-client', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(data)
