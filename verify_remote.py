@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), 'backend', '.env'))
 
-BASE_URL = "http://66.55.75.32"
+BASE_URL = "https://sql.thlcorporation.com"
 USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 PASSWORD = os.getenv("ADMIN_PASSWORD")
 

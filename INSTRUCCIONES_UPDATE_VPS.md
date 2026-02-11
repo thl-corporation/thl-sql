@@ -49,3 +49,11 @@ Si prefieres entrar al servidor y verificar manualmente:
 - Usar HTTPS con certificados válidos en Nginx para sql.thlcorporation.com
 - Configurar COOKIE_SECURE=true en el servicio
 - Limitar ALLOWED_ORIGINS a https://sql.thlcorporation.com
+
+## ✅ Verificación rápida post-deploy
+1. Probar acceso web:
+   - https://sql.thlcorporation.com
+2. Ejecutar verificación remota:
+   ```bash
+   python verify_remote.py
+   ```

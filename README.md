@@ -18,7 +18,7 @@ Panel web para administrar un servidor PostgreSQL y el firewall del VPS.
 - Crear/eliminar DB y usuarios: Implementado
 - Abrir/cerrar puertos: Implementado
 - Gráficas y listados: Implementado
-- Pausar DB: Pendiente
+- Pausar/Reanudar DB: Implementado
 
 ## Cómo ejecutar en local
 1. Crear un entorno virtual y activar:
@@ -56,17 +56,18 @@ Configuración recomendada:
 - GET /clients
 - PUT /clients/{client_id}
 - DELETE /clients/{client_id}
+- POST /clients/{client_id}/pause
+- POST /clients/{client_id}/resume
 - GET /api/stats
 - GET /api/ports
 - POST /api/ports/open
 - POST /api/ports/close
 - GET /api/config
 
-## Pausar bases de datos (propuesta técnica)
+## Pausar bases de datos (implementado)
 Para “pausar” una base sin eliminarla:
 - Revocar CONNECT al rol del cliente
 - Terminar conexiones activas con pg_terminate_backend
-- Opcional: REVOKE TEMP/CREATE y bloqueo de nuevas conexiones
 La reactivación invierte esos pasos (GRANT CONNECT, etc.).
 
 ## Seguridad recomendada
