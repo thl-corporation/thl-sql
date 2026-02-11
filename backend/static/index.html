@@ -164,6 +164,31 @@
                         </div>
                     </div>
                 </div>
+
+                <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl overflow-hidden border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+                    <div class="px-4 py-5 sm:p-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-lg font-semibold leading-6 text-slate-900 dark:text-slate-100">Acceso SQL por IP</h2>
+                            <button id="refreshSqlAccessButton" class="text-xs text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white">Actualizar</button>
+                        </div>
+
+                        <form id="addSqlAccessForm" class="flex gap-2 mb-3">
+                            <input type="text" id="sqlAccessIp" placeholder="IP o CIDR (ej. 203.0.113.10/32)" required class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
+                            <button type="submit" id="allowSqlAccessButton" class="inline-flex justify-center rounded-md border border-transparent bg-brand-600 py-2 px-4 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/60">
+                                Permitir
+                            </button>
+                        </form>
+
+                        <div class="text-xs text-slate-500 dark:text-slate-400 mb-4">Solo las IPs permitidas podrán conectarse al puerto 5432.</div>
+
+                        <div>
+                            <h3 class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">IPs permitidas</h3>
+                            <ul id="sqlAccessList" class="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
+                                <li class="py-2 text-slate-500 dark:text-slate-400 text-center">Cargando...</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- List Clients -->
@@ -728,8 +753,6 @@
         // --- Port Management ---
         async function fetchPorts() {
             const list = document.getElementById('portsList');
-            const sqlStatusText = document.getElementById('sqlStatusText');
-            const sqlStatusIndicator = document.getElementById('sqlStatusIndicator');
             
             try {
                 const res = await fetch('/api/ports');
@@ -744,14 +767,11 @@
                 }
                 
                 const ports = data.ports;
-                let sqlOpen = false;
                 
                 if (ports.length === 0) {
                     list.innerHTML = '<li class="py-2 text-slate-500 text-center text-xs">No hay puertos abiertos</li>';
                 } else {
                     ports.forEach(p => {
-                        if (p.port == 5432) sqlOpen = true;
-
                         const li = document.createElement('li');
                         li.className = "py-2 flex justify-between items-center text-slate-700 dark:text-slate-200";
 
@@ -785,21 +805,129 @@
                         list.appendChild(li);
                     });
                 }
-                
-                // Update SQL Status
-                if (sqlOpen) {
-                    sqlStatusText.innerText = 'Abierto al público';
-                    sqlStatusText.className = 'text-xs text-green-600 dark:text-emerald-300 font-medium';
-                    sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]';
-                } else {
-                    sqlStatusText.innerText = 'Cerrado / Restringido';
-                    sqlStatusText.className = 'text-xs text-slate-500 dark:text-slate-400';
-                    sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-slate-300 dark:bg-slate-700';
-                }
-                
             } catch (e) {
                 console.error("Failed to fetch ports", e);
                 list.innerHTML = '<li class="py-2 text-red-500 text-center text-xs">Error de conexión</li>';
+            }
+        }
+
+        function updateSqlStatus(publicAccess, allowed) {
+            const sqlStatusText = document.getElementById('sqlStatusText');
+            const sqlStatusIndicator = document.getElementById('sqlStatusIndicator');
+            if (publicAccess) {
+                sqlStatusText.innerText = 'Abierto al público';
+                sqlStatusText.className = 'text-xs text-red-600 dark:text-red-400 font-medium';
+                sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]';
+                return;
+            }
+            if (allowed.length > 0) {
+                sqlStatusText.innerText = 'Restringido por IP';
+                sqlStatusText.className = 'text-xs text-emerald-600 dark:text-emerald-300 font-medium';
+                sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]';
+                return;
+            }
+            sqlStatusText.innerText = 'Cerrado';
+            sqlStatusText.className = 'text-xs text-slate-500 dark:text-slate-400';
+            sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-slate-300 dark:bg-slate-700';
+        }
+
+        async function fetchSqlAccess() {
+            const list = document.getElementById('sqlAccessList');
+            list.innerHTML = '<li class="py-2 text-slate-500 text-center text-xs">Cargando...</li>';
+            try {
+                const res = await fetch('/api/sql-access');
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                const data = await res.json();
+                list.innerHTML = '';
+                if (data.status === 'error') {
+                    list.innerHTML = `<li class="py-2 text-red-500 text-center text-xs">${data.message}</li>`;
+                    updateSqlStatus(false, []);
+                    return;
+                }
+                const allowed = data.allowed || [];
+                updateSqlStatus(Boolean(data.public_access), allowed);
+                if (allowed.length === 0) {
+                    list.innerHTML = '<li class="py-2 text-slate-500 text-center text-xs">No hay IPs permitidas</li>';
+                    return;
+                }
+                allowed.forEach(ip => {
+                    const li = document.createElement('li');
+                    li.className = "py-2 flex justify-between items-center text-slate-700 dark:text-slate-200";
+
+                    const ipSpan = document.createElement('span');
+                    ipSpan.className = "font-mono text-xs";
+                    ipSpan.textContent = ip;
+                    li.appendChild(ipSpan);
+
+                    const removeButton = document.createElement('button');
+                    removeButton.type = "button";
+                    removeButton.className = "text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 border border-red-200 dark:border-red-900/60 rounded px-2 py-1 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors";
+                    removeButton.textContent = "Revocar";
+                    removeButton.addEventListener('click', () => revokeSqlAccess(ip, removeButton));
+                    li.appendChild(removeButton);
+
+                    list.appendChild(li);
+                });
+            } catch (e) {
+                list.innerHTML = '<li class="py-2 text-red-500 text-center text-xs">Error de conexión</li>';
+                updateSqlStatus(false, []);
+            }
+        }
+
+        async function allowSqlAccess(ip) {
+            const btn = document.getElementById('allowSqlAccessButton');
+            if (btn) {
+                setActionButtonLoading(btn, true, 'Permitiendo...');
+            }
+            try {
+                const res = await csrfFetch('/api/sql-access/allow', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip })
+                });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                const data = await res.json();
+                if (res.ok) {
+                    showToast('IP permitida');
+                    document.getElementById('addSqlAccessForm').reset();
+                    fetchSqlAccess();
+                } else {
+                    alert('Error: ' + data.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            } finally {
+                if (btn) {
+                    setActionButtonLoading(btn, false);
+                }
+            }
+        }
+
+        async function revokeSqlAccess(ip, button) {
+            if (!confirm(`¿Revocar acceso para ${ip}?`)) return;
+            try {
+                if (button) {
+                    setActionButtonLoading(button, true, 'Revocando...');
+                }
+                const res = await csrfFetch('/api/sql-access/revoke', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip })
+                });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                if (res.ok) {
+                    showToast('IP revocada');
+                    fetchSqlAccess();
+                } else {
+                    const data = await res.json();
+                    alert('Error: ' + data.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            } finally {
+                if (button) {
+                    setActionButtonLoading(button, false);
+                }
             }
         }
 
@@ -872,6 +1000,12 @@
             if (port) openPort(port);
         });
 
+        document.getElementById('addSqlAccessForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const ip = document.getElementById('sqlAccessIp').value.trim();
+            if (ip) allowSqlAccess(ip);
+        });
+
         function copyRowCredentials(clientName, dbName, dbUser) {
             const text = `Cliente: ${clientName}\nBase de Datos: ${dbName}\nUsuario: ${dbUser}\nHost: ${publicDbHost}\nPuerto: ${publicDbPort}\n\nConnection String: postgresql://${dbUser}:[PASSWORD]@${publicDbHost}:${publicDbPort}/${dbName}`;
             copyToClipboard(text, 'Credenciales completas copiadas');
@@ -903,9 +1037,14 @@
             fetchMetrics();
             fetchClients(); // Load initial list
             fetchPorts(); // Load ports
+            fetchSqlAccess();
             const refreshPortsButton = document.getElementById('refreshPortsButton');
             if (refreshPortsButton) {
                 refreshPortsButton.addEventListener('click', fetchPorts);
+            }
+            const refreshSqlAccessButton = document.getElementById('refreshSqlAccessButton');
+            if (refreshSqlAccessButton) {
+                refreshSqlAccessButton.addEventListener('click', fetchSqlAccess);
             }
         });
 

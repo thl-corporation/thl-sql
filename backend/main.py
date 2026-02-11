@@ -7,6 +7,7 @@ from psycopg2 import sql
 import secrets
 import string
 import os
+import ipaddress
 import psutil
 import subprocess
 import re
@@ -180,6 +181,9 @@ class PortRequest(BaseModel):
     port: int = Field(..., ge=1, le=65535)
     protocol: Literal["tcp", "udp"] = "tcp"
 
+class SqlAccessRequest(BaseModel):
+    ip: str
+
 def get_current_username(request: Request):
     session = get_session(request)
     return session["username"]
@@ -241,6 +245,38 @@ def normalize_user_slug(value: str, label: str):
     if not re.fullmatch(r"[a-z0-9_]{1,63}", cleaned):
         raise HTTPException(status_code=400, detail=f"{label} inválido")
     return cleaned
+
+def normalize_sql_ip(value: str):
+    cleaned = value.strip()
+    try:
+        net = ipaddress.ip_network(cleaned, strict=False)
+    except Exception:
+        raise HTTPException(status_code=400, detail="IP/CIDR inválido")
+    if str(net) in ("0.0.0.0/0", "::/0"):
+        raise HTTPException(status_code=400, detail="No se permite acceso público")
+    return str(net)
+
+def parse_sql_access_rules(output: str):
+    allowed = []
+    public_access = False
+    for line in output.splitlines():
+        if "ALLOW" not in line:
+            continue
+        parts = line.split()
+        if "ALLOW" not in parts:
+            continue
+        if not any(p.startswith("5432/") for p in parts):
+            continue
+        allow_index = parts.index("ALLOW")
+        if allow_index + 2 >= len(parts) or parts[allow_index + 1] != "IN":
+            continue
+        source = " ".join(parts[allow_index + 2:])
+        if source.startswith("Anywhere"):
+            public_access = True
+            continue
+        if source not in allowed:
+            allowed.append(source)
+    return allowed, public_access
 
 def encrypt_secret(value: str):
     return fernet.encrypt(value.encode()).decode()
@@ -675,6 +711,8 @@ def get_ports(username: str = Depends(get_current_username)):
 @app.post("/api/ports/open")
 def open_port(req: PortRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
     try:
+        if req.port == 5432:
+            raise HTTPException(status_code=403, detail="Puerto SQL se gestiona por IP")
         if not is_port_allowed(req.port):
             raise HTTPException(status_code=403, detail="Puerto no permitido")
         cmd = ["ufw", "allow", f"{req.port}/{req.protocol}"]
@@ -690,6 +728,8 @@ def open_port(req: PortRequest, username: str = Depends(get_current_username), c
 @app.post("/api/ports/close")
 def close_port(req: PortRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
     try:
+        if req.port == 5432:
+            raise HTTPException(status_code=403, detail="Puerto SQL se gestiona por IP")
         if not is_port_allowed(req.port):
             raise HTTPException(status_code=403, detail="Puerto no permitido")
         cmd = ["ufw", "delete", "allow", f"{req.port}/{req.protocol}"]
@@ -701,6 +741,49 @@ def close_port(req: PortRequest, username: str = Depends(get_current_username), 
              raise HTTPException(status_code=500, detail=result.stderr or "Failed to close port")
     except Exception as e:
         raise HTTPException(status_code=500, detail="Error al cerrar puerto")
+
+@app.get("/api/sql-access")
+def get_sql_access(username: str = Depends(get_current_username)):
+    try:
+        cmd = ["ufw", "status"]
+        result = run_sudo_command(cmd)
+        if result.returncode != 0:
+            return {"status": "error", "message": "Could not get firewall status", "detail": result.stderr, "allowed": [], "public_access": False}
+        output = result.stdout
+        lines = output.splitlines()
+        is_active = any("Status: active" in line for line in lines)
+        allowed, public_access = parse_sql_access_rules(output)
+        return {"status": "active" if is_active else "inactive", "allowed": allowed, "public_access": public_access}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "allowed": [], "public_access": False}
+
+@app.post("/api/sql-access/allow")
+def allow_sql_access(req: SqlAccessRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    try:
+        ip_value = normalize_sql_ip(req.ip)
+        cmd = ["ufw", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"]
+        result = run_sudo_command(cmd)
+        if result.returncode == 0:
+            return {"status": "success", "message": f"IP {ip_value} allowed"}
+        raise HTTPException(status_code=500, detail=result.stderr or "Failed to allow IP")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error al permitir IP")
+
+@app.post("/api/sql-access/revoke")
+def revoke_sql_access(req: SqlAccessRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    try:
+        ip_value = normalize_sql_ip(req.ip)
+        cmd = ["ufw", "delete", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"]
+        result = run_sudo_command(cmd)
+        if result.returncode == 0:
+            return {"status": "success", "message": f"IP {ip_value} revoked"}
+        raise HTTPException(status_code=500, detail=result.stderr or "Failed to revoke IP")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error al revocar IP")
 
 @app.get("/api/config")
 def get_config(username: str = Depends(get_current_username)):
