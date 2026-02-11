@@ -52,7 +52,7 @@ def test_remote_flow():
         existing = next((c for c in clients if c['db_name'] == test_db), None)
         if existing:
             print(f"   La base de datos de prueba {test_db} ya existe. Eliminándola primero...")
-        resp = session.delete(f"{BASE_URL}/clients/{existing['id']}", headers=get_csrf_headers())
+            resp = session.delete(f"{BASE_URL}/clients/{existing['id']}", headers=get_csrf_headers())
             if resp.status_code != 200:
                 print(f"ERROR: No se pudo limpiar la base de datos de prueba existente. Status: {resp.status_code}")
                 return False
