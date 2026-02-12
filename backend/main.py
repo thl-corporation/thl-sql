@@ -268,9 +268,12 @@ def parse_sql_access_rules(output: str):
         if not any(p.startswith("5432/") for p in parts):
             continue
         allow_index = parts.index("ALLOW")
-        if allow_index + 2 >= len(parts) or parts[allow_index + 1] != "IN":
+        source_start = allow_index + 1
+        if source_start < len(parts) and parts[source_start] == "IN":
+            source_start += 1
+        if source_start >= len(parts):
             continue
-        source = " ".join(parts[allow_index + 2:])
+        source = " ".join(parts[source_start:])
         if source.startswith("Anywhere"):
             public_access = True
             continue
@@ -690,6 +693,8 @@ def get_ports(username: str = Depends(get_current_username)):
                     else:
                         p = port_proto
                         proto = "any"
+                    if str(p) == "5432":
+                        continue
                         
                     # Avoid duplicates (v6)
                     exists = False
