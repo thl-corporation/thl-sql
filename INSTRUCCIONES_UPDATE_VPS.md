@@ -1,13 +1,13 @@
 # Guía de Actualización Automática del VPS
 
-Este repositorio está configurado para permitir actualizaciones directas al servidor VPS mediante comandos SSH remotos, utilizando llaves SSH almacenadas fuera del repositorio.
+Este repositorio está configurado para permitir actualizaciones directas al servidor VPS mediante comandos SSH remotos, utilizando la llave SSH en la carpeta del proyecto.
 
 ## 🚀 Comando de Actualización Rápida
 
 Para desplegar los últimos cambios de la rama `main` al servidor, ejecuta este comando desde tu terminal local (PowerShell o Bash) en la raíz del proyecto:
 
 ```bash
-ssh -i ~/.ssh/vps_kamatera_id_ed25519 root@66.55.75.32 "cd /var/www/pg_manager && GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519_github' git pull origin main && systemctl restart pg_manager"
+ssh -i ./ssh_keys/vps_kamatera_id_ed25519 root@66.55.75.32 "cd /var/www/pg_manager && GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519_github' git pull origin main && systemctl restart pg_manager"
 ```
 
 ### ¿Qué hace este comando?
@@ -24,7 +24,7 @@ Si prefieres entrar al servidor y verificar manualmente:
 
 1.  **Conectar al VPS:**
     ```bash
-    ssh -i ~/.ssh/vps_kamatera_id_ed25519 root@66.55.75.32
+    ssh -i ./ssh_keys/vps_kamatera_id_ed25519 root@66.55.75.32
     ```
 
 2.  **Ejecutar la actualización:**
@@ -42,8 +42,11 @@ Si prefieres entrar al servidor y verificar manualmente:
 ---
 
 ## 🔑 Gestión de Llaves
-- **Llave Local**: `~/.ssh/vps_kamatera_id_ed25519` (Se usa para conectar TU PC -> VPS)
+- **Llave Local**: `./ssh_keys/vps_kamatera_id_ed25519` (Se usa para conectar TU PC -> VPS)
 - **Llave Remota**: `~/.ssh/id_ed25519_github` (Se usa para conectar VPS -> GitHub)
+
+## 🔗 Repositorio remoto actualizado
+- **URL SSH**: `git@github.com:thl-corporation-spa/vps-kamatera-SQL-01.git`
 
 ## 🔒 Recomendaciones de seguridad operativa
 - Usar HTTPS con certificados válidos en Nginx para sql.thlcorporation.com
