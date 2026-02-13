@@ -240,6 +240,13 @@ def test_remote_flow():
                 test_ip_norm = None
 
             if test_ip_norm:
+                clients_list = request_json("GET", "/clients")
+                target_db = None
+                if isinstance(clients_list, list) and clients_list:
+                    target_db = clients_list[0].get("db_name")
+                if not target_db:
+                    print("   No hay bases disponibles para asignar IP. Se omite la prueba de IP.")
+                    return ok
                 sql_before = request_json("GET", "/api/sql-access")
                 allowed = sql_before.get("allowed", []) if sql_before else []
 
@@ -271,7 +278,7 @@ def test_remote_flow():
 
                     resp = session.post(
                         f"{BASE_URL}/api/sql-access/allow",
-                        json={"ip": test_ip_norm},
+                        json={"ip": test_ip_norm, "databases": [target_db]},
                         headers=get_csrf_headers()
                     )
                     if resp.status_code != 200:
@@ -284,7 +291,7 @@ def test_remote_flow():
                 else:
                     resp = session.post(
                         f"{BASE_URL}/api/sql-access/allow",
-                        json={"ip": test_ip_norm},
+                        json={"ip": test_ip_norm, "databases": [target_db]},
                         headers=get_csrf_headers()
                     )
                     if resp.status_code != 200:

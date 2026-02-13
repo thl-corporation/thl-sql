@@ -12,6 +12,7 @@ import psutil
 import subprocess
 import re
 import time
+import tempfile
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -43,6 +44,8 @@ DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", None)
 PUBLIC_DB_HOST = os.getenv("PUBLIC_DB_HOST", DB_HOST)
 PUBLIC_DB_PORT = int(os.getenv("PUBLIC_DB_PORT", "5432"))
+PG_HBA_PATH = os.getenv("PG_HBA_PATH", "/etc/postgresql/16/main/pg_hba.conf")
+PG_HBA_INCLUDE_PATH = os.getenv("PG_HBA_INCLUDE_PATH", "/etc/postgresql/16/main/pg_hba_sql_manager.conf")
 
 # Auth Configuration
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
@@ -184,6 +187,10 @@ class PortRequest(BaseModel):
 class SqlAccessRequest(BaseModel):
     ip: str
 
+class SqlAccessAssignRequest(BaseModel):
+    ip: str
+    databases: list[str] = Field(default_factory=list, min_length=1)
+
 def get_current_username(request: Request):
     session = get_session(request)
     return session["username"]
@@ -281,6 +288,70 @@ def parse_sql_access_rules(output: str):
             allowed.append(source)
     return allowed, public_access
 
+def read_file_content(path: str):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        result = run_sudo_command(["cat", path])
+        if result.returncode == 0:
+            return result.stdout
+    return ""
+
+def write_file_content(path: str, content: str):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+            return True
+    except Exception:
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        try:
+            tmp.write(content.encode("utf-8"))
+            tmp.flush()
+            tmp.close()
+            move_result = run_sudo_command(["mv", tmp.name, path])
+            if move_result.returncode == 0:
+                run_sudo_command(["chmod", "640", path])
+                return True
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+    return False
+
+def ensure_pg_hba_include():
+    content = read_file_content(PG_HBA_PATH)
+    include_line = f"include_if_exists '{PG_HBA_INCLUDE_PATH}'"
+    if include_line not in content:
+        updated = content.rstrip("\n") + "\n" + include_line + "\n"
+        write_file_content(PG_HBA_PATH, updated)
+
+def rebuild_pg_hba_rules():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT ips.ip_cidr, map.db_name, mc.db_user
+            FROM sql_access_ips ips
+            JOIN sql_access_ip_databases map ON map.ip_id = ips.id
+            JOIN managed_clients mc ON mc.db_name = map.db_name
+            ORDER BY ips.ip_cidr, map.db_name
+        """)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+    lines = [f"host {db_name} {db_user} {ip_cidr} scram-sha-256" for ip_cidr, db_name, db_user in rows]
+    ensure_pg_hba_include()
+    content = "\n".join(lines)
+    if content and not content.endswith("\n"):
+        content += "\n"
+    write_file_content(PG_HBA_INCLUDE_PATH, content)
+    result = run_sudo_command(["systemctl", "reload", "postgresql"])
+    if result.returncode != 0:
+        run_sudo_command(["systemctl", "restart", "postgresql"])
+
 def encrypt_secret(value: str):
     return fernet.encrypt(value.encode()).decode()
 
@@ -314,6 +385,22 @@ def init_metadata_db():
                 db_user TEXT NOT NULL,
                 db_password TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sql_access_ips (
+                id SERIAL PRIMARY KEY,
+                ip_cidr TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sql_access_ip_databases (
+                id SERIAL PRIMARY KEY,
+                ip_id INTEGER NOT NULL REFERENCES sql_access_ips(id) ON DELETE CASCADE,
+                db_name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (ip_id, db_name)
             );
         """)
     except Exception as e:
@@ -386,6 +473,10 @@ def logout(response: Response, request: Request, csrf_ok: bool = Depends(require
     response.delete_cookie(COOKIE_NAME)
     response.delete_cookie(CSRF_COOKIE_NAME)
     return {"message": "Logged out"}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request):
@@ -553,6 +644,13 @@ def delete_client(client_id: int, username: str = Depends(get_current_username),
         # Remove from metadata (Deep Clean Step 3)
         print(f"Removing metadata for client {client_id}...")
         cur.execute("DELETE FROM managed_clients WHERE id = %s", (client_id,))
+
+        cur.execute("DELETE FROM sql_access_ip_databases WHERE db_name = %s", (db_name,))
+        cur.execute("""
+            DELETE FROM sql_access_ips
+            WHERE id NOT IN (SELECT DISTINCT ip_id FROM sql_access_ip_databases)
+        """)
+        rebuild_pg_hba_rules()
         
         return {"status": "success", "message": f"Client {client_id} deleted (Deep Clean)"}
     except Exception as e:
@@ -749,28 +847,85 @@ def close_port(req: PortRequest, username: str = Depends(get_current_username), 
 
 @app.get("/api/sql-access")
 def get_sql_access(username: str = Depends(get_current_username)):
+    entries = []
+    allowed = []
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT ips.ip_cidr,
+                   COALESCE(array_agg(map.db_name ORDER BY map.db_name) FILTER (WHERE map.db_name IS NOT NULL), ARRAY[]::text[])
+            FROM sql_access_ips ips
+            LEFT JOIN sql_access_ip_databases map ON map.ip_id = ips.id
+            GROUP BY ips.ip_cidr
+            ORDER BY ips.ip_cidr
+        """)
+        rows = cur.fetchall()
+        for ip_cidr, db_names in rows:
+            entries.append({"ip": ip_cidr, "databases": db_names})
+            allowed.append(ip_cidr)
+    except Exception:
+        return {"status": "error", "message": "No se pudo leer la configuración SQL", "allowed": [], "public_access": False, "entries": []}
+    finally:
+        cur.close()
+        conn.close()
     try:
         cmd = ["ufw", "status"]
         result = run_sudo_command(cmd)
         if result.returncode != 0:
-            return {"status": "error", "message": "Could not get firewall status", "detail": result.stderr, "allowed": [], "public_access": False}
+            return {"status": "error", "message": "Could not get firewall status", "detail": result.stderr, "allowed": allowed, "public_access": False, "entries": entries}
         output = result.stdout
         lines = output.splitlines()
         is_active = any("Status: active" in line for line in lines)
-        allowed, public_access = parse_sql_access_rules(output)
-        return {"status": "active" if is_active else "inactive", "allowed": allowed, "public_access": public_access}
+        _, public_access = parse_sql_access_rules(output)
+        return {"status": "active" if is_active else "inactive", "allowed": allowed, "public_access": public_access, "entries": entries}
     except Exception as e:
-        return {"status": "error", "message": str(e), "allowed": [], "public_access": False}
+        return {"status": "error", "message": str(e), "allowed": allowed, "public_access": False, "entries": entries}
 
 @app.post("/api/sql-access/allow")
-def allow_sql_access(req: SqlAccessRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+def allow_sql_access(req: SqlAccessAssignRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
     try:
         ip_value = normalize_sql_ip(req.ip)
+        requested = [normalize_identifier(db, "Base de datos") for db in req.databases]
+        unique_dbs = []
+        seen = set()
+        for db_name in requested:
+            if db_name not in seen:
+                seen.add(db_name)
+                unique_dbs.append(db_name)
+        if not unique_dbs:
+            raise HTTPException(status_code=400, detail="Debes seleccionar al menos una base de datos")
+        conn = get_db_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT db_name FROM managed_clients WHERE db_name = ANY(%s)", (unique_dbs,))
+            existing = {row[0] for row in cur.fetchall()}
+            missing = [db for db in unique_dbs if db not in existing]
+            if missing:
+                raise HTTPException(status_code=400, detail="Base de datos no encontrada")
+            cur.execute("""
+                INSERT INTO sql_access_ips (ip_cidr)
+                VALUES (%s)
+                ON CONFLICT (ip_cidr) DO UPDATE SET ip_cidr = EXCLUDED.ip_cidr
+                RETURNING id
+            """, (ip_value,))
+            ip_id = cur.fetchone()[0]
+            cur.execute("DELETE FROM sql_access_ip_databases WHERE ip_id = %s", (ip_id,))
+            for db_name in unique_dbs:
+                cur.execute("""
+                    INSERT INTO sql_access_ip_databases (ip_id, db_name)
+                    VALUES (%s, %s)
+                    ON CONFLICT (ip_id, db_name) DO NOTHING
+                """, (ip_id, db_name))
+        finally:
+            cur.close()
+            conn.close()
         cmd = ["ufw", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"]
         result = run_sudo_command(cmd)
-        if result.returncode == 0:
-            return {"status": "success", "message": f"IP {ip_value} allowed"}
-        raise HTTPException(status_code=500, detail=result.stderr or "Failed to allow IP")
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=result.stderr or "Failed to allow IP")
+        rebuild_pg_hba_rules()
+        return {"status": "success", "message": f"IP {ip_value} allowed", "databases": unique_dbs}
     except HTTPException:
         raise
     except Exception as e:
@@ -780,9 +935,22 @@ def allow_sql_access(req: SqlAccessRequest, username: str = Depends(get_current_
 def revoke_sql_access(req: SqlAccessRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
     try:
         ip_value = normalize_sql_ip(req.ip)
+        conn = get_db_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT id FROM sql_access_ips WHERE ip_cidr = %s", (ip_value,))
+            row = cur.fetchone()
+            if row:
+                ip_id = row[0]
+                cur.execute("DELETE FROM sql_access_ip_databases WHERE ip_id = %s", (ip_id,))
+                cur.execute("DELETE FROM sql_access_ips WHERE id = %s", (ip_id,))
+        finally:
+            cur.close()
+            conn.close()
         cmd = ["ufw", "delete", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"]
         result = run_sudo_command(cmd)
         if result.returncode == 0:
+            rebuild_pg_hba_rules()
             return {"status": "success", "message": f"IP {ip_value} revoked"}
         raise HTTPException(status_code=500, detail=result.stderr or "Failed to revoke IP")
     except HTTPException:

@@ -179,6 +179,13 @@
                             </button>
                         </form>
 
+                        <div class="mb-4">
+                            <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Bases permitidas</div>
+                            <div id="sqlAccessDbList" class="mt-2 grid grid-cols-2 gap-2 max-h-28 overflow-y-auto rounded-xl border border-slate-200/70 dark:border-slate-800/70 bg-slate-50/70 dark:bg-slate-950/60 p-2 text-xs text-slate-600 dark:text-slate-300">
+                                <span class="col-span-2 text-slate-500 dark:text-slate-400 text-center">Cargando...</span>
+                            </div>
+                        </div>
+
                         <div class="text-xs text-slate-500 dark:text-slate-400 mb-4">Solo las IPs permitidas podrán conectarse al puerto 5432.</div>
 
                         <div>
@@ -330,6 +337,7 @@
 
         let publicDbHost = 'localhost';
         let publicDbPort = 5432;
+        let sqlAccessDatabases = [];
 
         function getCookie(name) {
             const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
@@ -495,6 +503,8 @@
                 tbody.innerHTML = '';
                 if (clients.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-sm text-slate-500 dark:text-slate-400">No hay clientes creados</td></tr>';
+                    sqlAccessDatabases = [];
+                    renderSqlAccessDbOptions();
                     return;
                 }
 
@@ -590,6 +600,8 @@
 
                     tbody.appendChild(tr);
                 });
+                sqlAccessDatabases = clients.map(client => String(client.db_name ?? '')).filter(Boolean);
+                renderSqlAccessDbOptions();
             } catch (e) {
                 console.error("Failed to fetch clients", e);
             }
@@ -811,6 +823,42 @@
             }
         }
 
+        function renderSqlAccessDbOptions() {
+            const container = document.getElementById('sqlAccessDbList');
+            if (!container) return;
+            container.innerHTML = '';
+            if (!sqlAccessDatabases.length) {
+                container.innerHTML = '<span class="col-span-2 text-slate-500 dark:text-slate-400 text-center">Sin bases disponibles</span>';
+                return;
+            }
+            sqlAccessDatabases.forEach(db => {
+                const label = document.createElement('label');
+                label.className = "flex items-center gap-2 px-2 py-1 rounded-lg bg-white/70 dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-800/70";
+                const checkbox = document.createElement('input');
+                checkbox.type = "checkbox";
+                checkbox.value = db;
+                checkbox.className = "h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/40";
+                const span = document.createElement('span');
+                span.className = "font-mono text-[11px]";
+                span.textContent = db;
+                label.appendChild(checkbox);
+                label.appendChild(span);
+                container.appendChild(label);
+            });
+        }
+
+        function getSelectedSqlDatabases() {
+            const container = document.getElementById('sqlAccessDbList');
+            if (!container) return [];
+            const selected = [];
+            container.querySelectorAll('input[type="checkbox"]').forEach(input => {
+                if (input.checked) {
+                    selected.push(input.value);
+                }
+            });
+            return selected;
+        }
+
         function updateSqlStatus(publicAccess, allowed) {
             const sqlStatusText = document.getElementById('sqlStatusText');
             const sqlStatusIndicator = document.getElementById('sqlStatusIndicator');
@@ -845,27 +893,51 @@
                     return;
                 }
                 const allowed = data.allowed || [];
+                const entries = data.entries || [];
                 updateSqlStatus(Boolean(data.public_access), allowed);
-                if (allowed.length === 0) {
+                if (entries.length === 0) {
                     list.innerHTML = '<li class="py-2 text-slate-500 text-center text-xs">No hay IPs permitidas</li>';
                     return;
                 }
-                allowed.forEach(ip => {
+                entries.forEach(entry => {
+                    const ip = entry.ip;
+                    const databases = Array.isArray(entry.databases) ? entry.databases : [];
                     const li = document.createElement('li');
-                    li.className = "py-2 flex justify-between items-center text-slate-700 dark:text-slate-200";
+                    li.className = "py-2 flex flex-col gap-2 text-slate-700 dark:text-slate-200";
+
+                    const header = document.createElement('div');
+                    header.className = "flex justify-between items-center";
 
                     const ipSpan = document.createElement('span');
                     ipSpan.className = "font-mono text-xs";
                     ipSpan.textContent = ip;
-                    li.appendChild(ipSpan);
+                    header.appendChild(ipSpan);
 
                     const removeButton = document.createElement('button');
                     removeButton.type = "button";
                     removeButton.className = "text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 border border-red-200 dark:border-red-900/60 rounded px-2 py-1 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors";
                     removeButton.textContent = "Revocar";
                     removeButton.addEventListener('click', () => revokeSqlAccess(ip, removeButton));
-                    li.appendChild(removeButton);
+                    header.appendChild(removeButton);
 
+                    const dbRow = document.createElement('div');
+                    dbRow.className = "flex flex-wrap gap-2";
+                    if (databases.length === 0) {
+                        const emptyTag = document.createElement('span');
+                        emptyTag.className = "text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-300";
+                        emptyTag.textContent = "Sin bases";
+                        dbRow.appendChild(emptyTag);
+                    } else {
+                        databases.forEach(db => {
+                            const tag = document.createElement('span');
+                            tag.className = "text-[11px] px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-100 font-mono";
+                            tag.textContent = db;
+                            dbRow.appendChild(tag);
+                        });
+                    }
+
+                    li.appendChild(header);
+                    li.appendChild(dbRow);
                     list.appendChild(li);
                 });
             } catch (e) {
@@ -880,16 +952,22 @@
                 setActionButtonLoading(btn, true, 'Permitiendo...');
             }
             try {
+                const databases = getSelectedSqlDatabases();
+                if (!databases.length) {
+                    alert('Selecciona al menos una base de datos');
+                    return;
+                }
                 const res = await csrfFetch('/api/sql-access/allow', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ip })
+                    body: JSON.stringify({ ip, databases })
                 });
                 if (res.status === 401) { window.location.href = '/login'; return; }
                 const data = await res.json();
                 if (res.ok) {
                     showToast('IP permitida');
                     document.getElementById('addSqlAccessForm').reset();
+                    renderSqlAccessDbOptions();
                     fetchSqlAccess();
                 } else {
                     alert('Error: ' + data.detail);
