@@ -7,14 +7,15 @@ Este repositorio está configurado para permitir actualizaciones directas al ser
 Para desplegar los últimos cambios de la rama `main` al servidor, ejecuta este comando desde tu terminal local (PowerShell o Bash) en la raíz del proyecto:
 
 ```bash
-ssh -i ./ssh_keys/vps_kamatera_id_ed25519 root@66.55.75.32 "cd /var/www/pg_manager && GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519_github' git pull origin main && systemctl restart pg_manager"
+ssh -i ./ssh_keys/vps_kamatera_id_ed25519 root@66.55.75.32 "cd /var/www/pg_manager && GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519_github' git pull origin main && chmod +x setup_dns.sh && ./setup_dns.sh && systemctl restart pg_manager"
 ```
 
 ### ¿Qué hace este comando?
 1.  Conecta al VPS usando la llave privada local.
 2.  Navega a la carpeta del proyecto.
 3.  Usa la llave de despliegue configurada en el servidor para hacer `git pull` desde GitHub.
-4.  Reinicia el servicio `pg_manager` para aplicar los cambios.
+4.  **Ejecuta la optimización de DNS (Google 8.8.8.8).**
+5.  Reinicia el servicio `pg_manager` para aplicar los cambios.
 
 ---
 

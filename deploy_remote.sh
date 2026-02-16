@@ -7,6 +7,14 @@ DOMAIN=${DOMAIN:-_}
 SSL_CERT_PATH=${SSL_CERT_PATH:-/etc/letsencrypt/live/$DOMAIN/fullchain.pem}
 SSL_KEY_PATH=${SSL_KEY_PATH:-/etc/letsencrypt/live/$DOMAIN/privkey.pem}
 
+# 0. Setup DNS (Google 8.8.8.8) - Mejora latencia de resolución
+if ! grep -q "DNS=8.8.8.8" /etc/systemd/resolved.conf; then
+    echo "Configurando DNS a Google..."
+    sed -i 's/#DNS=/DNS=8.8.8.8 8.8.4.4/' /etc/systemd/resolved.conf
+    sed -i 's/#FallbackDNS=/FallbackDNS=1.1.1.1 1.0.0.1/' /etc/systemd/resolved.conf
+    systemctl restart systemd-resolved || true
+fi
+
 # 1. Setup Postgres Config (Idempotent-ish)
 if ! grep -q "listen_addresses = '$PG_LISTEN_ADDRESSES'" /etc/postgresql/16/main/postgresql.conf; then
     echo "listen_addresses = '$PG_LISTEN_ADDRESSES'" >> /etc/postgresql/16/main/postgresql.conf

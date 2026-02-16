@@ -77,6 +77,9 @@ Para “pausar” una base sin eliminarla:
 - Terminar conexiones activas con pg_terminate_backend
 La reactivación invierte esos pasos (GRANT CONNECT, etc.).
 
+## Optimización del Servidor
+- **DNS**: Se ha configurado el uso de Google DNS (8.8.8.8) y Cloudflare (1.1.1.1) para mejorar la velocidad de resolución de nombres y la estabilidad de las conexiones salientes.
+
 ## Seguridad recomendada
 - Usar HTTPS en producción con sql.thlcorporation.com
 - Limitar ALLOWED_ORIGINS a https://sql.thlcorporation.com
