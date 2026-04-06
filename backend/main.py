@@ -1036,6 +1036,8 @@ def toggle_public_access(client_id: int, username: str = Depends(get_current_use
             "is_public": new_status, 
             "message": f"Acceso público {'activado' if new_status else 'desactivado'} para {db_name}"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error toggling public access: {e}")
         raise HTTPException(status_code=500, detail="Error al cambiar acceso público")

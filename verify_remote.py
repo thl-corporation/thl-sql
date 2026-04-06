@@ -161,7 +161,7 @@ def test_remote_flow():
                             continue
                     return False
                 if ports_before is not None and not port_is_open(ports_before_list, test_port):
-                    fail(f"El puerto {test_port} no aparece en la lista")
+                    print(f"   Aviso: el puerto protegido {test_port} no aparece en /api/ports (puede estar publicado por perfil UFW)")
                 print(f"   Puerto {test_port} protegido. Se omite abrir/cerrar.")
                 test_port = None
 
@@ -316,6 +316,47 @@ def test_remote_flow():
                             fail("La IP sigue en la lista después de revocar")
         else:
             print("   TEST_SQL_IP no configurado. Se omite la prueba de IP.")
+
+        print("7. Probando acceso público por base de datos...")
+        clients_public = request_json("GET", "/clients")
+        if isinstance(clients_public, list) and clients_public:
+            target_public = clients_public[0]
+            target_public_id = target_public.get("id")
+            initial_public = bool(target_public.get("is_public"))
+
+            resp = session.post(
+                f"{BASE_URL}/api/public-access/{target_public_id}/toggle",
+                headers=get_csrf_headers()
+            )
+            if resp.status_code != 200:
+                fail(f"No se pudo alternar acceso público para client_id={target_public_id}. Status: {resp.status_code}, Body: {resp.text}")
+            else:
+                updated_clients = request_json("GET", "/clients")
+                if isinstance(updated_clients, list):
+                    row = next((c for c in updated_clients if c.get("id") == target_public_id), None)
+                    if not row:
+                        fail("No se encontró el cliente después de alternar acceso público")
+                    else:
+                        state_after = bool(row.get("is_public"))
+                        if state_after == initial_public:
+                            fail("El estado is_public no cambió tras alternar acceso público")
+
+                restore_resp = session.post(
+                    f"{BASE_URL}/api/public-access/{target_public_id}/toggle",
+                    headers=get_csrf_headers()
+                )
+                if restore_resp.status_code != 200:
+                    fail(f"No se pudo restaurar acceso público para client_id={target_public_id}. Status: {restore_resp.status_code}, Body: {restore_resp.text}")
+                else:
+                    restored_clients = request_json("GET", "/clients")
+                    if isinstance(restored_clients, list):
+                        restored = next((c for c in restored_clients if c.get("id") == target_public_id), None)
+                        if not restored:
+                            fail("No se encontró el cliente al restaurar acceso público")
+                        elif bool(restored.get("is_public")) != initial_public:
+                            fail("El estado is_public no volvió al valor inicial tras restaurar")
+        else:
+            print("   No hay clientes para validar acceso público. Se omite.")
 
         if ok:
             print("\n¡PRUEBAS COMPLETADAS! El panel respondió correctamente en listas y acciones.")
