@@ -262,8 +262,8 @@ def normalize_sql_ip(value: str):
         net = ipaddress.ip_network(cleaned, strict=False)
     except Exception:
         raise HTTPException(status_code=400, detail="IP/CIDR inválido")
-    if str(net) in ("0.0.0.0/0", "::/0"):
-        raise HTTPException(status_code=400, detail="No se permite acceso público")
+    if str(net) == "::/0":
+        raise HTTPException(status_code=400, detail="Usa 0.0.0.0/0 para acceso público")
     return str(net)
 
 def parse_sql_access_rules(output: str):
@@ -334,7 +334,6 @@ def rebuild_pg_hba_rules():
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        # IP based rules
         cur.execute("""
             SELECT ips.ip_cidr, map.db_name, mc.db_user
             FROM sql_access_ips ips
@@ -342,21 +341,12 @@ def rebuild_pg_hba_rules():
             JOIN managed_clients mc ON mc.db_name = map.db_name
             ORDER BY ips.ip_cidr, map.db_name
         """)
-        ip_rows = cur.fetchall()
-        
-        # Public access rules
-        cur.execute("""
-            SELECT '0.0.0.0/0', db_name, db_user
-            FROM managed_clients
-            WHERE is_public = TRUE
-        """)
-        public_rows = cur.fetchall()
-        
-        has_public = len(public_rows) > 0
-        all_rows = ip_rows + public_rows
+        all_rows = cur.fetchall()
     finally:
         cur.close()
         conn.close()
+
+    has_public = any(row[0] == "0.0.0.0/0" for row in all_rows)
 
     lines = [f"host {db_name} {db_user} {ip_cidr} scram-sha-256" for ip_cidr, db_name, db_user in all_rows]
     ensure_pg_hba_include()
@@ -364,19 +354,16 @@ def rebuild_pg_hba_rules():
     if content and not content.endswith("\n"):
         content += "\n"
     write_file_content(PG_HBA_INCLUDE_PATH, content)
-    
+
     # Reload Postgres
     result = run_sudo_command(["systemctl", "reload", "postgresql"])
     if result.returncode != 0:
         run_sudo_command(["systemctl", "restart", "postgresql"])
-    
+
     # Manage UFW for Anywhere access if needed
     if has_public:
         run_sudo_command(["ufw", "allow", "5432/tcp"])
     else:
-        # If no DB is public, we should remove the general 'allow 5432/tcp' 
-        # but keep the specific IP rules. 
-        # UFW specific rules are separate from the general 'allow 5432' rule.
         run_sudo_command(["ufw", "delete", "allow", "5432/tcp"])
 
 def encrypt_secret(value: str):
@@ -590,7 +577,7 @@ def list_clients(username: str = Depends(get_current_username)):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT id, client_name, db_name, db_user, db_password, created_at, is_public FROM managed_clients ORDER BY created_at DESC")
+        cur.execute("SELECT id, client_name, db_name, db_user, db_password, created_at FROM managed_clients ORDER BY created_at DESC")
         rows = cur.fetchall()
         db_names = [row[2] for row in rows]
         db_allow_map = {}
@@ -607,8 +594,7 @@ def list_clients(username: str = Depends(get_current_username)):
                 "db_name": row[2],
                 "db_user": row[3],
                 "created_at": row[5].isoformat() if row[5] else None,
-                "paused": not allow_conn,
-                "is_public": row[6]
+                "paused": not allow_conn
             })
         return clients
     finally:
@@ -976,7 +962,10 @@ def allow_sql_access(req: SqlAccessAssignRequest, username: str = Depends(get_cu
         finally:
             cur.close()
             conn.close()
-        cmd = ["ufw", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"]
+        if ip_value == "0.0.0.0/0":
+            cmd = ["ufw", "allow", "5432/tcp"]
+        else:
+            cmd = ["ufw", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"]
         result = run_sudo_command(cmd)
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail=result.stderr or "Failed to allow IP")
@@ -1003,7 +992,10 @@ def revoke_sql_access(req: SqlAccessRequest, username: str = Depends(get_current
         finally:
             cur.close()
             conn.close()
-        cmd = ["ufw", "delete", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"]
+        if ip_value == "0.0.0.0/0":
+            cmd = ["ufw", "delete", "allow", "5432/tcp"]
+        else:
+            cmd = ["ufw", "delete", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"]
         result = run_sudo_command(cmd)
         if result.returncode == 0:
             rebuild_pg_hba_rules()
@@ -1013,37 +1005,6 @@ def revoke_sql_access(req: SqlAccessRequest, username: str = Depends(get_current
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail="Error al revocar IP")
-
-@app.post("/api/public-access/{client_id}/toggle")
-def toggle_public_access(client_id: int, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT is_public, db_name FROM managed_clients WHERE id = %s", (client_id,))
-        row = cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Client not found")
-        
-        new_status = not row[0]
-        db_name = row[1]
-        
-        cur.execute("UPDATE managed_clients SET is_public = %s WHERE id = %s", (new_status, client_id))
-        
-        rebuild_pg_hba_rules()
-        
-        return {
-            "status": "success", 
-            "is_public": new_status, 
-            "message": f"Acceso público {'activado' if new_status else 'desactivado'} para {db_name}"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error toggling public access: {e}")
-        raise HTTPException(status_code=500, detail="Error al cambiar acceso público")
-    finally:
-        cur.close()
-        conn.close()
 
 @app.get("/api/config")
 def get_config(username: str = Depends(get_current_username)):

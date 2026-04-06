@@ -13,7 +13,7 @@ Panel web para administrar un servidor PostgreSQL y el firewall del VPS.
 - Crear y eliminar bases de datos y usuarios
 - Poner bases de datos en reposo o “pausa”
 - Abrir y cerrar puertos del servidor
-- Controlar acceso SQL por IP
+- Controlar acceso SQL por IP (incluye acceso público con 0.0.0.0)
 - Panel con gráficas y listados
 
 ## Estado respecto a los requisitos
@@ -67,7 +67,7 @@ Configuración recomendada:
 - POST /api/ports/open
 - POST /api/ports/close
 - GET /api/sql-access
-- POST /api/sql-access/allow
+- POST /api/sql-access/allow (usar IP `0.0.0.0` para acceso público)
 - POST /api/sql-access/revoke
 - GET /api/config
 
@@ -85,5 +85,5 @@ La reactivación invierte esos pasos (GRANT CONNECT, etc.).
 - Limitar ALLOWED_ORIGINS a https://sql.thlcorporation.com
 - Configurar COOKIE_SECURE=true
 - Evitar ROOT_PASSWORD en procesos web; usar sudoers con comandos permitidos
-- Gestionar el puerto 5432 solo por IP y evitar apertura pública
+- Gestionar el puerto 5432 por IP; usar 0.0.0.0 solo cuando se necesite acceso público
 - Validar y sanitizar entradas que se muestran en la UI
