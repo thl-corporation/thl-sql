@@ -350,12 +350,8 @@ def rebuild_pg_hba_rules():
 
     lines = []
     for ip_cidr, db_name, db_user in all_rows:
-        if ip_cidr == "0.0.0.0/0":
-            lines.append(f"hostssl {db_name} {db_user} {ip_cidr} md5")
-            lines.append(f"hostnossl {db_name} {db_user} {ip_cidr} md5")
-        else:
-            lines.append(f"hostssl {db_name} {db_user} {ip_cidr} scram-sha-256")
-            lines.append(f"hostnossl {db_name} {db_user} {ip_cidr} scram-sha-256")
+        lines.append(f"hostssl {db_name} {db_user} {ip_cidr} scram-sha-256")
+        lines.append(f"hostnossl {db_name} {db_user} {ip_cidr} md5")
     ensure_pg_hba_include()
     content = "\n".join(lines)
     if content and not content.endswith("\n"):
