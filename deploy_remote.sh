@@ -20,7 +20,9 @@ if ! grep -q "listen_addresses = '$PG_LISTEN_ADDRESSES'" /etc/postgresql/16/main
     echo "listen_addresses = '$PG_LISTEN_ADDRESSES'" >> /etc/postgresql/16/main/postgresql.conf
 fi
 
-if ! grep -q "host all all $PG_ALLOWED_CIDR scram-sha-256" /etc/postgresql/16/main/pg_hba.conf; then
+if [ "$PG_ALLOWED_CIDR" = "0.0.0.0/0" ]; then
+    echo "WARN: Skipping pg_hba rule for 0.0.0.0/0 — public access is managed from the panel"
+elif ! grep -q "host all all $PG_ALLOWED_CIDR scram-sha-256" /etc/postgresql/16/main/pg_hba.conf; then
     echo "host all all $PG_ALLOWED_CIDR scram-sha-256" >> /etc/postgresql/16/main/pg_hba.conf
 fi
 
