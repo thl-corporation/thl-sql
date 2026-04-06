@@ -348,7 +348,12 @@ def rebuild_pg_hba_rules():
 
     has_public = any(row[0] == "0.0.0.0/0" for row in all_rows)
 
-    lines = [f"host {db_name} {db_user} {ip_cidr} scram-sha-256" for ip_cidr, db_name, db_user in all_rows]
+    lines = []
+    for ip_cidr, db_name, db_user in all_rows:
+        if ip_cidr == "0.0.0.0/0":
+            lines.append(f"host {db_name} {db_user} {ip_cidr} md5")
+        else:
+            lines.append(f"host {db_name} {db_user} {ip_cidr} scram-sha-256")
     ensure_pg_hba_include()
     content = "\n".join(lines)
     if content and not content.endswith("\n"):
