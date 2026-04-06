@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from cryptography.fernet import Fernet
+import sys
 
 # Load environment variables
 load_dotenv()
@@ -40,13 +41,19 @@ app.add_middleware(
 # Configuration
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_NAME = os.getenv("DB_NAME", "postgres")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", None)
 PUBLIC_DB_HOST = os.getenv("PUBLIC_DB_HOST", DB_HOST)
 PUBLIC_DB_PORT = int(os.getenv("PUBLIC_DB_PORT", "5432"))
+POOLING_ENABLED = os.getenv("POOLING_ENABLED", "false").lower() in ("1", "true", "yes")
+PGBOUNCER_HOST = os.getenv("PGBOUNCER_HOST", "127.0.0.1")
+PGBOUNCER_PORT = int(os.getenv("PGBOUNCER_PORT", "6432"))
+POOL_MODE = os.getenv("POOL_MODE", "transaction")
 PG_HBA_PATH = os.getenv("PG_HBA_PATH", "/etc/postgresql/16/main/pg_hba.conf")
 PG_HBA_INCLUDE_PATH = os.getenv("PG_HBA_INCLUDE_PATH", "/etc/postgresql/16/main/pg_hba_sql_manager.conf")
 
@@ -129,6 +136,72 @@ def run_sudo_command(cmd_args):
             
     # Return the last result (likely failed) or a dummy failed result
     return subprocess.CompletedProcess(cmd_args, 1, stdout="", stderr="Command failed and no sudo method worked")
+
+def get_python_executable():
+    deployed_python = os.path.join(PROJECT_ROOT, "venv", "bin", "python3")
+    if os.path.exists(deployed_python):
+        return deployed_python
+    return sys.executable
+
+def sync_pgbouncer_auth():
+    if not POOLING_ENABLED:
+        return True
+    script_path = os.path.join(PROJECT_ROOT, "server", "sync_pgbouncer_auth.py")
+    env_file = os.path.join(BASE_DIR, ".env")
+    if not os.path.exists(script_path):
+        print(f"PgBouncer sync script not found: {script_path}")
+        return False
+    cmd = [get_python_executable(), script_path, "--env-file", env_file]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"PgBouncer auth sync failed: {result.stderr or result.stdout}")
+        return False
+    return True
+
+def get_pgbouncer_connection():
+    conn = psycopg2.connect(
+        database="pgbouncer",
+        user=DB_USER,
+        host=PGBOUNCER_HOST,
+        port=PGBOUNCER_PORT,
+        password=DB_PASSWORD
+    )
+    conn.autocommit = True
+    return conn
+
+def get_service_status(service_name: str):
+    result = run_sudo_command(["systemctl", "is-active", service_name])
+    if result.returncode != 0:
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+def get_pooling_snapshot():
+    summary = {
+        "cl_active": 0,
+        "cl_waiting": 0,
+        "sv_active": 0,
+        "sv_idle": 0,
+        "pools": []
+    }
+    conn = get_pgbouncer_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SHOW POOLS")
+        columns = [desc[0] for desc in cur.description]
+        for row in cur.fetchall():
+            pool = dict(zip(columns, row))
+            summary["pools"].append(pool)
+            summary["cl_active"] += int(pool.get("cl_active", 0))
+            summary["cl_waiting"] += int(pool.get("cl_waiting", 0))
+            summary["sv_active"] += int(pool.get("sv_active", 0))
+            summary["sv_idle"] += int(pool.get("sv_idle", 0))
+        cur.execute("SHOW VERSION")
+        version_row = cur.fetchone()
+        summary["version"] = version_row[0] if version_row else None
+        return summary
+    finally:
+        cur.close()
+        conn.close()
 
 def parse_allowed_ports(value: str):
     raw = value.strip().lower()
@@ -354,9 +427,18 @@ def rebuild_pg_hba_rules():
     has_public = any(row[0] == "0.0.0.0/0" for row in all_rows)
 
     lines = []
-    for ip_cidr, db_name, db_user in all_rows:
-        lines.append(f"hostssl {db_name} {db_user} {ip_cidr} scram-sha-256")
-        lines.append(f"hostnossl {db_name} {db_user} {ip_cidr} md5")
+    if POOLING_ENABLED:
+        seen_pairs = set()
+        for _, db_name, db_user in all_rows:
+            key = (db_name, db_user)
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            lines.append(f"host {db_name} {db_user} 127.0.0.1/32 scram-sha-256")
+    else:
+        for ip_cidr, db_name, db_user in all_rows:
+            lines.append(f"hostssl {db_name} {db_user} {ip_cidr} scram-sha-256")
+            lines.append(f"hostnossl {db_name} {db_user} {ip_cidr} md5")
     ensure_pg_hba_include()
     content = "\n".join(lines)
     if content and not content.endswith("\n"):
@@ -387,6 +469,7 @@ def get_db_connection():
             database=DB_NAME,
             user=DB_USER,
             host=DB_HOST,
+            port=DB_PORT,
             password=DB_PASSWORD
         )
         conn.autocommit = True
@@ -445,6 +528,7 @@ def init_metadata_db():
 # Initialize DB on startup
 try:
     init_metadata_db()
+    sync_pgbouncer_auth()
 except Exception as e:
     print(f"Startup Warning: Could not initialize database: {e}")
 
@@ -555,6 +639,8 @@ def create_client(request: ClientRequest, username: str = Depends(get_current_us
         
         # 3. Revoke connect on database from public
         cur.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM public").format(sql.Identifier(db_name)))
+        cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(sql.Identifier(db_name), sql.Identifier(db_user)))
+        cur.execute(sql.SQL("REVOKE CONNECT ON DATABASE postgres FROM {}").format(sql.Identifier(db_user)))
         
         # 4. Save metadata
         cur.execute(
@@ -562,7 +648,9 @@ def create_client(request: ClientRequest, username: str = Depends(get_current_us
             (client_name, db_name, db_user, encrypt_secret(db_pass))
         )
 
-        return {
+        pool_sync_ok = sync_pgbouncer_auth()
+
+        response = {
             "status": "success",
             "connection_info": {
                 "host": PUBLIC_DB_HOST, 
@@ -570,9 +658,20 @@ def create_client(request: ClientRequest, username: str = Depends(get_current_us
                 "database": db_name,
                 "user": db_user,
                 "password": db_pass,
+                "connection_mode": "pooled" if POOLING_ENABLED else "direct",
+                "pool_mode": POOL_MODE if POOLING_ENABLED else None,
                 "connection_string": f"postgresql://{db_user}:{db_pass}@{PUBLIC_DB_HOST}:{PUBLIC_DB_PORT}/{db_name}"
             }
         }
+        if POOLING_ENABLED:
+            response["pooling"] = {
+                "enabled": True,
+                "mode": POOL_MODE,
+                "pgbouncer_port": PGBOUNCER_PORT
+            }
+            if not pool_sync_ok:
+                response["warning"] = "PgBouncer auth sync failed. Run server/sync_pgbouncer_auth.py on the server."
+        return response
     except Exception as e:
         print(f"Error creating client: {e}")
         raise HTTPException(status_code=400, detail="Error al crear cliente")
@@ -613,6 +712,7 @@ def list_clients(username: str = Depends(get_current_username)):
 def update_client(client_id: int, request: UpdateClientRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
     conn = get_db_connection()
     cur = conn.cursor()
+    pool_sync_ok = True
     try:
         cur.execute("SELECT db_user, client_name FROM managed_clients WHERE id = %s", (client_id,))
         row = cur.fetchone()
@@ -626,12 +726,16 @@ def update_client(client_id: int, request: UpdateClientRequest, username: str = 
             cur.execute(sql.SQL("ALTER USER {} WITH PASSWORD %s").format(sql.Identifier(db_user)), [request.new_password])
             # Update Metadata
             cur.execute("UPDATE managed_clients SET db_password = %s WHERE id = %s", (encrypt_secret(request.new_password), client_id))
+            pool_sync_ok = sync_pgbouncer_auth()
             
         if request.client_name and request.client_name != current_client_name:
             new_client_name = normalize_client_name(request.client_name, "Nombre de cliente")
             cur.execute("UPDATE managed_clients SET client_name = %s WHERE id = %s", (new_client_name, client_id))
             
-        return {"status": "success", "message": "Client updated successfully"}
+        response = {"status": "success", "message": "Client updated successfully"}
+        if POOLING_ENABLED and request.new_password and not pool_sync_ok:
+            response["warning"] = "PgBouncer auth sync failed. Run server/sync_pgbouncer_auth.py on the server."
+        return response
     except Exception as e:
         print(f"Error updating client: {e}")
         raise HTTPException(status_code=500, detail="Error al actualizar cliente")
@@ -695,8 +799,12 @@ def delete_client(client_id: int, username: str = Depends(get_current_username),
             WHERE id NOT IN (SELECT DISTINCT ip_id FROM sql_access_ip_databases)
         """)
         rebuild_pg_hba_rules()
-        
-        return {"status": "success", "message": f"Client {client_id} deleted (Deep Clean)"}
+        pool_sync_ok = sync_pgbouncer_auth()
+
+        response = {"status": "success", "message": f"Client {client_id} deleted (Deep Clean)"}
+        if POOLING_ENABLED and not pool_sync_ok:
+            response["warning"] = "PgBouncer auth sync failed. Run server/sync_pgbouncer_auth.py on the server."
+        return response
     except Exception as e:
         print(f"Error deleting client: {e}")
         raise HTTPException(status_code=500, detail="Error al eliminar cliente")
@@ -1014,8 +1122,38 @@ def revoke_sql_access(req: SqlAccessRequest, username: str = Depends(get_current
     except Exception as e:
         raise HTTPException(status_code=500, detail="Error al revocar IP")
 
+@app.get("/api/pooling/status")
+def get_pooling_status(username: str = Depends(get_current_username)):
+    data = {
+        "enabled": POOLING_ENABLED,
+        "mode": POOL_MODE,
+        "public_port": PUBLIC_DB_PORT,
+        "postgres_port": DB_PORT,
+        "pgbouncer_host": PGBOUNCER_HOST,
+        "pgbouncer_port": PGBOUNCER_PORT,
+        "services": {
+            "haproxy": get_service_status("haproxy") if POOLING_ENABLED else "disabled",
+            "pgbouncer": get_service_status("pgbouncer") if POOLING_ENABLED else "disabled"
+        }
+    }
+    if not POOLING_ENABLED:
+        return data
+    try:
+        data["summary"] = get_pooling_snapshot()
+    except Exception as e:
+        data["summary"] = {"error": str(e)}
+    return data
+
 @app.get("/api/config")
 def get_config(username: str = Depends(get_current_username)):
-    return {"public_db_host": PUBLIC_DB_HOST, "public_db_port": PUBLIC_DB_PORT}
+    return {
+        "public_db_host": PUBLIC_DB_HOST,
+        "public_db_port": PUBLIC_DB_PORT,
+        "pooling_enabled": POOLING_ENABLED,
+        "pool_mode": POOL_MODE,
+        "postgres_port": DB_PORT,
+        "pgbouncer_host": PGBOUNCER_HOST,
+        "pgbouncer_port": PGBOUNCER_PORT
+    }
 
 app.mount("/static", StaticFiles(directory="static"), name="static")

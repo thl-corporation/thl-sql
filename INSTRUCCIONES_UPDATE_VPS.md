@@ -1,66 +1,78 @@
-# Guía de Actualización Automática del VPS
+# Guia de actualizacion del VPS
 
-Este repositorio está configurado para permitir actualizaciones directas al servidor VPS mediante comandos SSH remotos, utilizando la llave SSH en la carpeta del proyecto.
+Este repo deja versionado el camino completo para actualizar el servidor y reaplicar la arquitectura:
 
-## 🚀 Comando de Actualización Rápida
+`HAProxy:5432 -> PgBouncer:6432 -> PostgreSQL:5433`
 
-Para desplegar los últimos cambios de la rama `main` al servidor, ejecuta este comando desde tu terminal local (PowerShell o Bash) en la raíz del proyecto:
+## Comando rapido
+
+Desde la raiz del proyecto en tu maquina local:
 
 ```bash
-ssh -i ./ssh_keys/vps_kamatera_id_ed25519 root@66.55.75.32 "cd /var/www/pg_manager && GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519_github' git pull origin main && chmod +x setup_dns.sh && ./setup_dns.sh && systemctl restart pg_manager"
+ssh -i ./ssh_keys/vps_kamatera_id_ed25519 root@66.55.75.32 "cd /var/www/pg_manager && GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519_github' git pull origin main && bash deploy_remote.sh"
 ```
 
-### ¿Qué hace este comando?
-1.  Conecta al VPS usando la llave privada local.
-2.  Navega a la carpeta del proyecto.
-3.  Usa la llave de despliegue configurada en el servidor para hacer `git pull` desde GitHub.
-4.  **Ejecuta la optimización de DNS (Google 8.8.8.8).**
-5.  Reinicia el servicio `pg_manager` para aplicar los cambios.
+## Que hace `deploy_remote.sh`
 
----
+1. Actualiza dependencias Python del backend.
+2. Fuerza en `backend/.env` las variables del stack de pooling.
+3. Reconfigura PostgreSQL para usar `5433` interno.
+4. Reinstala y valida `PgBouncer + HAProxy`.
+5. Regenera el auth file de PgBouncer desde la metadata del panel.
+6. Reinicia `pg_manager`, `pgbouncer` y `haproxy`.
 
-## 🛠️ Actualización Manual (Paso a Paso)
+## Validacion posterior al deploy
 
-Si prefieres entrar al servidor y verificar manualmente:
+Dentro del VPS:
 
-1.  **Conectar al VPS:**
-    ```bash
-    ssh -i ./ssh_keys/vps_kamatera_id_ed25519 root@66.55.75.32
-    ```
+```bash
+cd /var/www/pg_manager
+source venv/bin/activate
+python verify_deployment.py
+python server/run_sql_load_test.py --connections 1000 --hold-seconds 20 --sample-seconds 8
+```
 
-2.  **Ejecutar la actualización:**
-    ```bash
-    cd /var/www/pg_manager
-    git pull origin main
-    systemctl restart pg_manager
-    ```
+Desde tu maquina local:
 
-3.  **Verificar estado:**
-    ```bash
-    systemctl status pg_manager
-    ```
+```bash
+python verify_remote.py
+```
 
----
+Chequeo de firewall (diagnostico rapido):
 
-## 🔑 Gestión de Llaves
-- **Llave Local**: `./ssh_keys/vps_kamatera_id_ed25519` (Se usa para conectar TU PC -> VPS)
-- **Llave Remota**: `~/.ssh/id_ed25519_github` (Se usa para conectar VPS -> GitHub)
+```bash
+sudo ufw status verbose
+```
 
-## 🔗 Repositorio remoto actualizado
-- **URL SSH**: `git@github.com:thl-corporation-spa/vps-kamatera-SQL-01.git`
+## Servicios a revisar
 
-## 🔒 Recomendaciones de seguridad operativa
-- Usar HTTPS con certificados válidos en Nginx para sql.thlcorporation.com
-- Configurar COOKIE_SECURE=true en el servicio
-- Limitar ALLOWED_ORIGINS a https://sql.thlcorporation.com
-- Mantener ALLOWED_PORTS sin 5432 y gestionar SQL por IP desde el panel
+```bash
+systemctl status postgresql
+systemctl status pgbouncer
+systemctl status haproxy
+systemctl status pg_manager
+```
 
-## ✅ Verificación rápida post-deploy
-1. Probar acceso web:
-   - https://sql.thlcorporation.com
-2. Ejecutar verificación remota:
-   ```bash
-   python verify_remote.py
-   ```
-3. Validar acceso SQL por IP:
-   - Ingresar al panel y revisar “Acceso SQL por IP”
+## Archivos clave en el servidor
+
+- `/var/www/pg_manager/backend/.env`
+- `/etc/pgbouncer/pgbouncer.ini`
+- `/etc/pgbouncer/userlist.txt`
+- `/etc/haproxy/haproxy.cfg`
+- `/etc/systemd/system/pg_manager.service`
+
+## Nota de migracion
+
+Si `server/sync_pgbouncer_auth.py` avisa que no pudo desencriptar la clave de un cliente historico, ese usuario no entrara al `auth_file` de PgBouncer hasta que se actualice su password.
+
+La forma segura de resolverlo es:
+
+1. Entrar al panel.
+2. Cambiar la password de ese cliente.
+3. Verificar que vuelva a aparecer en `/etc/pgbouncer/userlist.txt`.
+
+## Llaves y acceso
+
+- Llave local: `./ssh_keys/vps_kamatera_id_ed25519`
+- Llave GitHub en el VPS: `~/.ssh/id_ed25519_github`
+- VPS actual: `root@66.55.75.32`

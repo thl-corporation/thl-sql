@@ -1,29 +1,57 @@
-import requests
+import ipaddress
+import os
 import sys
 import time
-import os
-import ipaddress
+
+import psycopg2
+import requests
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(__file__), 'backend', '.env'))
+
+load_dotenv(os.path.join(os.path.dirname(__file__), "backend", ".env"))
 
 BASE_URL = os.getenv("BASE_URL", "https://sql.thlcorporation.com")
 USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 PASSWORD = os.getenv("ADMIN_PASSWORD")
 TEST_PORT_ENV = os.getenv("TEST_PORT", "443").strip()
 TEST_SQL_IP = os.getenv("TEST_SQL_IP", "144.91.101.204/32").strip()
+REQUIRE_POOLING = os.getenv("REQUIRE_POOLING", "true").lower() in ("1", "true", "yes")
 
 if not PASSWORD:
     print("Error: ADMIN_PASSWORD not found in environment or .env file.")
     sys.exit(1)
 
+
 def normalize_ip(value: str):
     net = ipaddress.ip_network(value.strip(), strict=False)
     return str(net)
 
+
+def connect_sql(connection_info: dict):
+    conn = psycopg2.connect(
+        host=connection_info["host"],
+        port=connection_info["port"],
+        database=connection_info["database"],
+        user=connection_info["user"],
+        password=connection_info["password"],
+        connect_timeout=10,
+        application_name="verify_remote_sql",
+    )
+    conn.autocommit = True
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT current_database(), current_user, 1")
+        row = cur.fetchone()
+        return {"database": row[0], "user": row[1], "ok": row[2] == 1}
+    finally:
+        conn.close()
+
+
 def test_remote_flow():
     session = requests.Session()
     ok = True
+    target_client_id = None
+    test_db = "test_verify_remote_db"
 
     def fail(msg):
         nonlocal ok
@@ -38,333 +66,238 @@ def test_remote_flow():
         url = f"{BASE_URL}{path}"
         resp = session.request(method, url, headers=headers, **kwargs)
         if resp.status_code not in expected:
-            fail(f"{method} {path} falló. Status: {resp.status_code}, Body: {resp.text}")
+            fail(f"{method} {path} fallo. Status: {resp.status_code}, Body: {resp.text}")
             return None
         try:
             return resp.json()
         except Exception:
-            fail(f"{method} {path} devolvió JSON inválido")
+            fail(f"{method} {path} devolvio JSON invalido")
             return None
 
-    print(f"1. Conectando a {BASE_URL}...")
+    def fetch_clients():
+        resp = session.get(f"{BASE_URL}/clients")
+        if resp.status_code != 200:
+            fail(f"No se pudo obtener la lista de clientes. Status: {resp.status_code}")
+            return []
+        data = resp.json()
+        if not isinstance(data, list):
+            fail("La lista de clientes no tiene el formato esperado")
+            return []
+        return data
+
+    def find_ip_entry(sql_payload, ip_value):
+        entries = sql_payload.get("entries", []) if isinstance(sql_payload, dict) else []
+        for entry in entries:
+            try:
+                if normalize_ip(entry.get("ip", "")) == ip_value:
+                    return entry
+            except Exception:
+                continue
+        return None
+
+    def restore_ip_mapping(ip_value, original_databases):
+        if original_databases:
+            resp = session.post(
+                f"{BASE_URL}/api/sql-access/allow",
+                json={"ip": ip_value, "databases": original_databases},
+                headers=get_csrf_headers(),
+            )
+            if resp.status_code != 200:
+                fail(f"No se pudo restaurar la IP {ip_value}. Status: {resp.status_code}, Body: {resp.text}")
+        else:
+            resp = session.post(
+                f"{BASE_URL}/api/sql-access/revoke",
+                json={"ip": ip_value},
+                headers=get_csrf_headers(),
+            )
+            if resp.status_code != 200:
+                fail(f"No se pudo revocar la IP {ip_value}. Status: {resp.status_code}, Body: {resp.text}")
+
     try:
+        print(f"1. Conectando a {BASE_URL}...")
         login_payload = {"username": USERNAME, "password": PASSWORD}
         resp = session.post(f"{BASE_URL}/login", json=login_payload)
-
         if resp.status_code != 200:
-            fail(f"Falló el login. Status: {resp.status_code}, Body: {resp.text}")
+            fail(f"Fallo el login. Status: {resp.status_code}, Body: {resp.text}")
             return False
-
         print("   Login exitoso.")
 
-        print("2. Probando tarjetas y listas...")
+        print("2. Validando endpoints principales...")
         stats = request_json("GET", "/api/stats")
-        if stats is not None:
-            if "cpu" not in stats or "memory" not in stats or "connections" not in stats:
-                fail("La tarjeta de métricas no tiene el formato esperado")
+        if stats is not None and ("cpu" not in stats or "memory" not in stats or "connections" not in stats):
+            fail("La tarjeta de metricas no tiene el formato esperado")
 
         ports_data = request_json("GET", "/api/ports")
-        if ports_data is not None:
-            ports_list = ports_data.get("ports")
-            if not isinstance(ports_list, list):
-                fail("La lista de puertos no tiene el formato esperado")
+        if ports_data is not None and not isinstance(ports_data.get("ports"), list):
+            fail("La lista de puertos no tiene el formato esperado")
 
         sql_data = request_json("GET", "/api/sql-access")
-        if sql_data is not None:
-            allowed_list = sql_data.get("allowed")
-            if not isinstance(allowed_list, list):
-                fail("La lista de IPs permitidas no tiene el formato esperado")
+        if sql_data is not None and not isinstance(sql_data.get("allowed"), list):
+            fail("La lista de IPs permitidas no tiene el formato esperado")
 
         config = request_json("GET", "/api/config")
         if config is not None:
             if "public_db_host" not in config or "public_db_port" not in config:
-                fail("La tarjeta de configuración no tiene el formato esperado")
+                fail("La tarjeta de configuracion no tiene el formato esperado")
+            else:
+                print(f"   Conexion SQL publica configurada en {config['public_db_host']}:{config['public_db_port']}")
 
-        resp = session.get(f"{BASE_URL}/clients")
-        if resp.status_code != 200:
-            fail(f"No se pudo obtener la lista de clientes. Status: {resp.status_code}")
-            return False
+        pooling = request_json("GET", "/api/pooling/status")
+        if pooling is not None:
+            print(
+                "   Pooling:",
+                f"enabled={pooling.get('enabled')}",
+                f"mode={pooling.get('mode')}",
+                f"services={pooling.get('services')}",
+            )
+            if REQUIRE_POOLING and not pooling.get("enabled"):
+                fail("El pooler deberia estar habilitado y no lo esta")
+            services = pooling.get("services", {})
+            if REQUIRE_POOLING and (services.get("haproxy") != "active" or services.get("pgbouncer") != "active"):
+                fail("HAProxy/PgBouncer no estan activos segun /api/pooling/status")
 
-        clients = resp.json()
-        if not isinstance(clients, list):
-            fail("La lista de clientes no tiene el formato esperado")
-            return False
+        clients = fetch_clients()
         print(f"   Clientes actuales: {len(clients)}")
 
-        test_db = "test_verify_remote_db"
-
-        existing = next((c for c in clients if c.get('db_name') == test_db), None)
+        existing = next((c for c in clients if c.get("db_name") == test_db), None)
         if existing:
-            print(f"   La base de datos de prueba {test_db} ya existe. Eliminándola primero...")
+            print(f"   Limpiando base de prueba existente: {test_db}")
             resp = session.delete(f"{BASE_URL}/clients/{existing['id']}", headers=get_csrf_headers())
             if resp.status_code != 200:
-                fail(f"No se pudo limpiar la base de datos de prueba existente. Status: {resp.status_code}")
+                fail(f"No se pudo limpiar la base existente. Status: {resp.status_code}, Body: {resp.text}")
                 return False
-            print("   Limpieza completada.")
             time.sleep(2)
 
         print(f"3. Creando base de datos de prueba: {test_db}...")
-        create_payload = {
-            "client_name": "Test Client Remote",
-            "db_name": test_db
-        }
+        create_payload = {"client_name": "Test Client Remote", "db_name": test_db}
         resp = session.post(f"{BASE_URL}/create-client", json=create_payload, headers=get_csrf_headers())
         if resp.status_code != 200:
-            fail(f"Falló la creación. Status: {resp.status_code}, Body: {resp.text}")
+            fail(f"Fallo la creacion. Status: {resp.status_code}, Body: {resp.text}")
             return False
+        create_result = resp.json()
 
-        print("   Creado exitosamente. Buscando ID...")
-        resp = session.get(f"{BASE_URL}/clients")
-        clients = resp.json()
-        target_client = next((c for c in clients if c.get('db_name') == test_db), None)
-
+        clients = fetch_clients()
+        target_client = next((c for c in clients if c.get("db_name") == test_db), None)
         if not target_client:
-            fail("La base de datos creada no aparece en la lista.")
+            fail("La base creada no aparece en la lista.")
             return False
+        target_client_id = target_client["id"]
+        print(f"   Creada y verificada con ID={target_client_id}")
 
-        client_id = target_client['id']
-        print(f"   Verificado en la lista. ID encontrado: {client_id}")
-
-        print(f"4. Eliminando base de datos {test_db}...")
-        resp = session.delete(f"{BASE_URL}/clients/{client_id}", headers=get_csrf_headers())
-
-        if resp.status_code != 200:
-            fail(f"Falló la eliminación. Status: {resp.status_code}, Body: {resp.text}")
-            return False
-
-        resp = session.get(f"{BASE_URL}/clients")
-        clients = resp.json()
-        found = any(c.get('db_name') == test_db for c in clients)
-        if found:
-            fail("La base de datos sigue apareciendo en la lista después de borrar.")
-            return False
-
-        print("   Verificado: Ya no aparece en la lista.")
-
-        print("5. Probando apertura y cierre de puertos...")
+        print("4. Probando apertura y cierre de puertos HTTP auxiliares...")
         if TEST_PORT_ENV:
             try:
                 test_port = int(TEST_PORT_ENV)
             except Exception:
-                fail("TEST_PORT inválido")
+                fail("TEST_PORT invalido")
                 test_port = None
 
             if test_port in (22, 80, 443, 5432):
-                ports_before = request_json("GET", "/api/ports")
-                ports_before_list = ports_before.get("ports", []) if ports_before else []
-                def port_is_open(ports, port):
-                    for p in ports:
-                        try:
-                            if int(p.get("port")) == int(port):
-                                return True
-                        except Exception:
-                            continue
-                    return False
-                if ports_before is not None and not port_is_open(ports_before_list, test_port):
-                    print(f"   Aviso: el puerto protegido {test_port} no aparece en /api/ports (puede estar publicado por perfil UFW)")
                 print(f"   Puerto {test_port} protegido. Se omite abrir/cerrar.")
-                test_port = None
-
-            if test_port:
-                ports_before = request_json("GET", "/api/ports")
-                ports_before_list = ports_before.get("ports", []) if ports_before else []
-
-                def port_is_open(ports, port):
-                    for p in ports:
+            elif test_port:
+                def port_is_open(payload, port):
+                    for item in payload.get("ports", []):
                         try:
-                            if int(p.get("port")) == int(port):
+                            if int(item.get("port")) == int(port):
                                 return True
                         except Exception:
                             continue
                     return False
 
-                was_open = port_is_open(ports_before_list, test_port)
+                before = request_json("GET", "/api/ports") or {"ports": []}
+                was_open = port_is_open(before, test_port)
 
-                if was_open:
-                    resp = session.post(
-                        f"{BASE_URL}/api/ports/close",
-                        json={"port": test_port, "protocol": "tcp"},
-                        headers=get_csrf_headers()
-                    )
-                    if resp.status_code != 200:
-                        fail(f"No se pudo cerrar el puerto {test_port}. Status: {resp.status_code}, Body: {resp.text}")
-                    else:
-                        ports_after = request_json("GET", "/api/ports")
-                        if ports_after and port_is_open(ports_after.get("ports", []), test_port):
-                            fail(f"El puerto {test_port} sigue abierto después de cerrar")
-
+                if not was_open:
                     resp = session.post(
                         f"{BASE_URL}/api/ports/open",
                         json={"port": test_port, "protocol": "tcp"},
-                        headers=get_csrf_headers()
-                    )
-                    if resp.status_code != 200:
-                        fail(f"No se pudo reabrir el puerto {test_port}. Status: {resp.status_code}, Body: {resp.text}")
-                    else:
-                        ports_after = request_json("GET", "/api/ports")
-                        if ports_after and not port_is_open(ports_after.get("ports", []), test_port):
-                            fail(f"El puerto {test_port} no aparece en la lista después de abrir")
-                else:
-                    resp = session.post(
-                        f"{BASE_URL}/api/ports/open",
-                        json={"port": test_port, "protocol": "tcp"},
-                        headers=get_csrf_headers()
+                        headers=get_csrf_headers(),
                     )
                     if resp.status_code != 200:
                         fail(f"No se pudo abrir el puerto {test_port}. Status: {resp.status_code}, Body: {resp.text}")
-                    else:
-                        ports_after = request_json("GET", "/api/ports")
-                        if ports_after and not port_is_open(ports_after.get("ports", []), test_port):
-                            fail(f"El puerto {test_port} no aparece en la lista después de abrir")
 
+                resp = session.post(
+                    f"{BASE_URL}/api/ports/close",
+                    json={"port": test_port, "protocol": "tcp"},
+                    headers=get_csrf_headers(),
+                )
+                if resp.status_code != 200:
+                    fail(f"No se pudo cerrar el puerto {test_port}. Status: {resp.status_code}, Body: {resp.text}")
+
+                if was_open:
                     resp = session.post(
-                        f"{BASE_URL}/api/ports/close",
+                        f"{BASE_URL}/api/ports/open",
                         json={"port": test_port, "protocol": "tcp"},
-                        headers=get_csrf_headers()
+                        headers=get_csrf_headers(),
                     )
                     if resp.status_code != 200:
-                        fail(f"No se pudo cerrar el puerto {test_port}. Status: {resp.status_code}, Body: {resp.text}")
-                    else:
-                        ports_after = request_json("GET", "/api/ports")
-                        if ports_after and port_is_open(ports_after.get("ports", []), test_port):
-                            fail(f"El puerto {test_port} sigue abierto después de cerrar")
+                        fail(f"No se pudo restaurar el puerto {test_port}. Status: {resp.status_code}, Body: {resp.text}")
         else:
             print("   TEST_PORT no configurado. Se omite la prueba de puertos.")
 
-        print("6. Probando acceso SQL por IP...")
+        print("5. Probando acceso SQL por IP y conexion real al pool...")
         if TEST_SQL_IP:
             try:
                 test_ip_norm = normalize_ip(TEST_SQL_IP)
             except Exception:
-                fail("TEST_SQL_IP inválido")
+                fail("TEST_SQL_IP invalido")
                 test_ip_norm = None
 
             if test_ip_norm:
-                clients_list = request_json("GET", "/clients")
-                target_db = None
-                if isinstance(clients_list, list) and clients_list:
-                    target_db = clients_list[0].get("db_name")
-                if not target_db:
-                    print("   No hay bases disponibles para asignar IP. Se omite la prueba de IP.")
-                    return ok
-                sql_before = request_json("GET", "/api/sql-access")
-                allowed = sql_before.get("allowed", []) if sql_before else []
+                sql_before = request_json("GET", "/api/sql-access") or {}
+                original_entry = find_ip_entry(sql_before, test_ip_norm)
+                original_databases = list(original_entry.get("databases", [])) if original_entry else []
+                desired_databases = sorted(set(original_databases + [test_db]))
 
-                def normalize_list(items):
-                    normalized = []
-                    for item in items:
-                        try:
-                            normalized.append(normalize_ip(item))
-                        except Exception:
-                            normalized.append(item)
-                    return normalized
-
-                allowed_norm = normalize_list(allowed)
-                was_allowed = test_ip_norm in allowed_norm
-
-                if was_allowed:
-                    resp = session.post(
-                        f"{BASE_URL}/api/sql-access/revoke",
-                        json={"ip": test_ip_norm},
-                        headers=get_csrf_headers()
-                    )
-                    if resp.status_code != 200:
-                        fail(f"No se pudo revocar la IP {test_ip_norm}. Status: {resp.status_code}, Body: {resp.text}")
-                    else:
-                        sql_after = request_json("GET", "/api/sql-access")
-                        allowed_after = normalize_list(sql_after.get("allowed", [])) if sql_after else []
-                        if test_ip_norm in allowed_after:
-                            fail("La IP sigue en la lista después de revocar")
-
-                    resp = session.post(
-                        f"{BASE_URL}/api/sql-access/allow",
-                        json={"ip": test_ip_norm, "databases": [target_db]},
-                        headers=get_csrf_headers()
-                    )
-                    if resp.status_code != 200:
-                        fail(f"No se pudo restaurar la IP {test_ip_norm}. Status: {resp.status_code}, Body: {resp.text}")
-                    else:
-                        sql_after = request_json("GET", "/api/sql-access")
-                        allowed_after = normalize_list(sql_after.get("allowed", [])) if sql_after else []
-                        if test_ip_norm not in allowed_after:
-                            fail("La IP no aparece en la lista después de permitir")
-                else:
-                    resp = session.post(
-                        f"{BASE_URL}/api/sql-access/allow",
-                        json={"ip": test_ip_norm, "databases": [target_db]},
-                        headers=get_csrf_headers()
-                    )
-                    if resp.status_code != 200:
-                        fail(f"No se pudo permitir la IP {test_ip_norm}. Status: {resp.status_code}, Body: {resp.text}")
-                    else:
-                        sql_after = request_json("GET", "/api/sql-access")
-                        allowed_after = normalize_list(sql_after.get("allowed", [])) if sql_after else []
-                        if test_ip_norm not in allowed_after:
-                            fail("La IP no aparece en la lista después de permitir")
-
-                    resp = session.post(
-                        f"{BASE_URL}/api/sql-access/revoke",
-                        json={"ip": test_ip_norm},
-                        headers=get_csrf_headers()
-                    )
-                    if resp.status_code != 200:
-                        fail(f"No se pudo revocar la IP {test_ip_norm}. Status: {resp.status_code}, Body: {resp.text}")
-                    else:
-                        sql_after = request_json("GET", "/api/sql-access")
-                        allowed_after = normalize_list(sql_after.get("allowed", [])) if sql_after else []
-                        if test_ip_norm in allowed_after:
-                            fail("La IP sigue en la lista después de revocar")
-        else:
-            print("   TEST_SQL_IP no configurado. Se omite la prueba de IP.")
-
-        print("7. Probando acceso público por base de datos...")
-        clients_public = request_json("GET", "/clients")
-        if isinstance(clients_public, list) and clients_public:
-            target_public = clients_public[0]
-            target_public_id = target_public.get("id")
-            initial_public = bool(target_public.get("is_public"))
-
-            resp = session.post(
-                f"{BASE_URL}/api/public-access/{target_public_id}/toggle",
-                headers=get_csrf_headers()
-            )
-            if resp.status_code != 200:
-                fail(f"No se pudo alternar acceso público para client_id={target_public_id}. Status: {resp.status_code}, Body: {resp.text}")
-            else:
-                updated_clients = request_json("GET", "/clients")
-                if isinstance(updated_clients, list):
-                    row = next((c for c in updated_clients if c.get("id") == target_public_id), None)
-                    if not row:
-                        fail("No se encontró el cliente después de alternar acceso público")
-                    else:
-                        state_after = bool(row.get("is_public"))
-                        if state_after == initial_public:
-                            fail("El estado is_public no cambió tras alternar acceso público")
-
-                restore_resp = session.post(
-                    f"{BASE_URL}/api/public-access/{target_public_id}/toggle",
-                    headers=get_csrf_headers()
+                resp = session.post(
+                    f"{BASE_URL}/api/sql-access/allow",
+                    json={"ip": test_ip_norm, "databases": desired_databases},
+                    headers=get_csrf_headers(),
                 )
-                if restore_resp.status_code != 200:
-                    fail(f"No se pudo restaurar acceso público para client_id={target_public_id}. Status: {restore_resp.status_code}, Body: {restore_resp.text}")
+                if resp.status_code != 200:
+                    fail(f"No se pudo permitir la IP {test_ip_norm}. Status: {resp.status_code}, Body: {resp.text}")
                 else:
-                    restored_clients = request_json("GET", "/clients")
-                    if isinstance(restored_clients, list):
-                        restored = next((c for c in restored_clients if c.get("id") == target_public_id), None)
-                        if not restored:
-                            fail("No se encontró el cliente al restaurar acceso público")
-                        elif bool(restored.get("is_public")) != initial_public:
-                            fail("El estado is_public no volvió al valor inicial tras restaurar")
+                    try:
+                        sql_result = connect_sql(create_result["connection_info"])
+                        if not sql_result.get("ok"):
+                            fail("La conexion SQL al pool no devolvio el resultado esperado")
+                        else:
+                            print(
+                                "   Conexion SQL OK:",
+                                f"db={sql_result['database']}",
+                                f"user={sql_result['user']}",
+                            )
+                    except Exception as exc:
+                        fail(f"No se pudo conectar via SQL al endpoint publico: {exc}")
+                    finally:
+                        restore_ip_mapping(test_ip_norm, original_databases)
         else:
-            print("   No hay clientes para validar acceso público. Se omite.")
+            print("   TEST_SQL_IP no configurado. Se omite la prueba de SQL real.")
+
+        print(f"6. Eliminando base de datos de prueba: {test_db}...")
+        if target_client_id is not None:
+            resp = session.delete(f"{BASE_URL}/clients/{target_client_id}", headers=get_csrf_headers())
+            if resp.status_code != 200:
+                fail(f"Fallo la eliminacion. Status: {resp.status_code}, Body: {resp.text}")
+            else:
+                clients = fetch_clients()
+                if any(c.get("db_name") == test_db for c in clients):
+                    fail("La base sigue apareciendo en la lista despues de borrar.")
 
         if ok:
-            print("\n¡PRUEBAS COMPLETADAS! El panel respondió correctamente en listas y acciones.")
+            print("\nPRUEBAS COMPLETADAS: API, proxy SQL y operaciones administrativas respondieron correctamente.")
         return ok
 
     except Exception as e:
-        print(f"EXCEPCIÓN CRÍTICA: {e}")
+        print(f"EXCEPCION CRITICA: {e}")
         return False
+    finally:
+        if target_client_id is not None:
+            try:
+                session.delete(f"{BASE_URL}/clients/{target_client_id}", headers=get_csrf_headers())
+            except Exception:
+                pass
+
 
 if __name__ == "__main__":
     success = test_remote_flow()

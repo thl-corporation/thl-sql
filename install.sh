@@ -124,14 +124,14 @@ fi
 # 5. Instalar dependencias del sistema
 # ============================================================
 echo ""
-echo -e "${YELLOW}[1/8] Instalando dependencias del sistema...${NC}"
+echo -e "${YELLOW}[1/9] Instalando dependencias del sistema...${NC}"
 apt-get update -qq
-apt-get install -y -qq python3 python3-venv python3-pip nginx postgresql postgresql-contrib ufw curl git > /dev/null
+apt-get install -y -qq python3 python3-venv python3-pip nginx postgresql postgresql-contrib ufw curl git pgbouncer haproxy > /dev/null
 
 # ============================================================
 # 6. Configurar DNS
 # ============================================================
-echo -e "${YELLOW}[2/8] Configurando DNS...${NC}"
+echo -e "${YELLOW}[2/9] Configurando DNS...${NC}"
 if ! grep -q "DNS=8.8.8.8" /etc/systemd/resolved.conf 2>/dev/null; then
     sed -i 's/#DNS=/DNS=8.8.8.8 8.8.4.4/' /etc/systemd/resolved.conf
     sed -i 's/#FallbackDNS=/FallbackDNS=1.1.1.1 1.0.0.1/' /etc/systemd/resolved.conf
@@ -141,12 +141,11 @@ fi
 # ============================================================
 # 7. Configurar PostgreSQL
 # ============================================================
-echo -e "${YELLOW}[3/8] Configurando PostgreSQL...${NC}"
+echo -e "${YELLOW}[3/9] Configurando PostgreSQL...${NC}"
 
 # Set password
 su - postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD '${PG_PASSWORD}';\"" > /dev/null
 
-# Listen on all interfaces
 PG_CONF=$(find /etc/postgresql -name postgresql.conf | head -1)
 PG_HBA=$(find /etc/postgresql -name pg_hba.conf | head -1)
 
@@ -155,13 +154,9 @@ if [ -z "$PG_CONF" ] || [ -z "$PG_HBA" ]; then
     exit 1
 fi
 
-if ! grep -q "listen_addresses = '\*'" "$PG_CONF"; then
-    echo "listen_addresses = '*'" >> "$PG_CONF"
-fi
-
-# Add localhost scram auth
-if ! grep -q "host all all 127.0.0.1/32 scram-sha-256" "$PG_HBA"; then
-    echo "host all all 127.0.0.1/32 scram-sha-256" >> "$PG_HBA"
+# Add localhost scram auth only for the admin role
+if ! grep -q "host all postgres 127.0.0.1/32 scram-sha-256" "$PG_HBA"; then
+    echo "host all postgres 127.0.0.1/32 scram-sha-256" >> "$PG_HBA"
 fi
 
 # Add include for managed rules (without quotes - PG16 requirement)
@@ -184,7 +179,7 @@ chmod +x /usr/local/bin/configure_postgres_timeouts.sh
 # ============================================================
 # 8. Desplegar aplicacion
 # ============================================================
-echo -e "${YELLOW}[4/8] Desplegando aplicacion...${NC}"
+echo -e "${YELLOW}[4/9] Desplegando aplicacion...${NC}"
 
 mkdir -p "$APP_DIR"
 
@@ -204,12 +199,13 @@ python3 -m venv "$APP_DIR/venv"
 # ============================================================
 # 9. Generar .env
 # ============================================================
-echo -e "${YELLOW}[5/8] Generando configuracion...${NC}"
+echo -e "${YELLOW}[5/9] Generando configuracion...${NC}"
 
 ENCRYPTION_KEY=$("$APP_DIR/venv/bin/python3" -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 
 cat > "$APP_DIR/backend/.env" <<ENVEOF
 DB_HOST=localhost
+DB_PORT=5433
 DB_NAME=postgres
 DB_USER=postgres
 DB_PASSWORD=${PG_PASSWORD}
@@ -218,6 +214,24 @@ ADMIN_PASSWORD=${ADMIN_PASSWORD}
 COOKIE_NAME=access_token
 PUBLIC_DB_HOST=${SERVER_IP}
 PUBLIC_DB_PORT=5432
+POOLING_ENABLED=true
+PGBOUNCER_HOST=127.0.0.1
+PGBOUNCER_PORT=6432
+POOL_MODE=transaction
+PGBOUNCER_MAX_CLIENT_CONN=2000
+PGBOUNCER_DEFAULT_POOL_SIZE=80
+PGBOUNCER_MIN_POOL_SIZE=20
+PGBOUNCER_RESERVE_POOL_SIZE=40
+PGBOUNCER_RESERVE_POOL_TIMEOUT_SEC=5
+SQL_PROXY_LISTEN_BACKLOG=4096
+PGBOUNCER_CLIENT_LOGIN_TIMEOUT_SEC=120
+PGBOUNCER_QUERY_WAIT_TIMEOUT_SEC=120
+PGBOUNCER_SERVER_LOGIN_RETRY_SEC=15
+HAPROXY_MAXCONN=4000
+HAPROXY_TIMEOUT_CONNECT=15s
+HAPROXY_TIMEOUT_CLIENT=5m
+HAPROXY_TIMEOUT_SERVER=5m
+HAPROXY_TIMEOUT_QUEUE=90s
 ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
 COOKIE_SECURE=${COOKIE_SECURE}
 CSRF_COOKIE_NAME=csrf_token
@@ -230,9 +244,17 @@ ENVEOF
 chmod 600 "$APP_DIR/backend/.env"
 
 # ============================================================
-# 10. Systemd service
+# 10. SQL proxy stack
 # ============================================================
-echo -e "${YELLOW}[6/8] Configurando servicio systemd...${NC}"
+echo -e "${YELLOW}[6/9] Configurando HAProxy + PgBouncer...${NC}"
+
+bash "$APP_DIR/server/configure_sql_proxy.sh" "$APP_DIR/backend/.env"
+"$APP_DIR/venv/bin/python3" "$APP_DIR/server/sync_pgbouncer_auth.py" --env-file "$APP_DIR/backend/.env"
+
+# ============================================================
+# 11. Systemd service
+# ============================================================
+echo -e "${YELLOW}[7/9] Configurando servicio systemd...${NC}"
 
 cat > /etc/systemd/system/pg_manager.service <<SVCEOF
 [Unit]
@@ -256,9 +278,9 @@ systemctl enable pg_manager
 systemctl start pg_manager
 
 # ============================================================
-# 11. Nginx
+# 12. Nginx
 # ============================================================
-echo -e "${YELLOW}[7/8] Configurando Nginx...${NC}"
+echo -e "${YELLOW}[8/9] Configurando Nginx...${NC}"
 
 rm -f /etc/nginx/sites-enabled/default
 
@@ -320,9 +342,9 @@ NGEOF
 fi
 
 # ============================================================
-# 12. Firewall + Watchdog
+# 13. Firewall + Watchdog
 # ============================================================
-echo -e "${YELLOW}[8/8] Configurando firewall y watchdog...${NC}"
+echo -e "${YELLOW}[9/9] Configurando firewall y watchdog...${NC}"
 
 ufw allow 22/tcp > /dev/null 2>&1
 ufw allow ${WEB_PORT}/tcp > /dev/null 2>&1
@@ -347,10 +369,26 @@ if ! systemctl is-active --quiet pg_manager; then
     systemctl restart pg_manager
 fi
 
+if ! systemctl is-active --quiet pgbouncer; then
+    echo "$(date) - pgbouncer caido, reiniciando..." >> "$LOG"
+    systemctl restart pgbouncer
+fi
+
+if ! systemctl is-active --quiet haproxy; then
+    echo "$(date) - haproxy caido, reiniciando..." >> "$LOG"
+    systemctl restart haproxy
+fi
+
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:8000/login 2>/dev/null)
 if [ "$HTTP_CODE" != "200" ]; then
     echo "$(date) - pg_manager no responde (HTTP $HTTP_CODE), reiniciando..." >> "$LOG"
     systemctl restart pg_manager
+fi
+
+if ! timeout 5 bash -c "</dev/tcp/127.0.0.1/5432" 2>/dev/null; then
+    echo "$(date) - SQL proxy no responde en 127.0.0.1:5432, reiniciando haproxy y pgbouncer..." >> "$LOG"
+    systemctl restart pgbouncer
+    systemctl restart haproxy
 fi
 WDEOF
 chmod +x /usr/local/bin/pg_manager_watchdog.sh

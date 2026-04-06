@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_NAME = "postgres" # Connect to default postgres DB to manage others
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
@@ -23,6 +24,7 @@ def get_db_connection():
         database=DB_NAME,
         user=DB_USER,
         host=DB_HOST,
+        port=DB_PORT,
         password=DB_PASSWORD
     )
     conn.autocommit = True
