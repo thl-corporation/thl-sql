@@ -38,6 +38,9 @@ app.add_middleware(
 )
 
 # Configuration
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_NAME = os.getenv("DB_NAME", "postgres")
 DB_USER = os.getenv("DB_USER", "postgres")
@@ -423,7 +426,8 @@ def login_page(request: Request):
     except HTTPException:
         pass
     
-    with open("static/login.html", "r", encoding="utf-8") as f:
+    login_html_path = os.path.join(STATIC_DIR, "login.html")
+    with open(login_html_path, "r", encoding="utf-8") as f:
         return f.read()
 
 @app.post("/login")
@@ -476,7 +480,16 @@ def logout(response: Response, request: Request, csrf_ok: bool = Depends(require
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    try:
+        conn = get_db_connection()
+        conn.close()
+        return {"status": "ok", "database": "connected"}
+    except Exception as e:
+        print(f"Health check failed: {e}")
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "database": "disconnected"}
+        )
 
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request):
@@ -485,7 +498,8 @@ def read_root(request: Request):
     except HTTPException:
         return RedirectResponse(url="/login")
         
-    with open("static/index.html", "r", encoding="utf-8") as f:
+    index_html_path = os.path.join(STATIC_DIR, "index.html")
+    with open(index_html_path, "r", encoding="utf-8") as f:
         return f.read()
 
 @app.post("/create-client")
@@ -825,7 +839,10 @@ def open_port(req: PortRequest, username: str = Depends(get_current_username), c
             return {"status": "success", "message": f"Port {req.port}/{req.protocol} opened"}
         else:
             raise HTTPException(status_code=500, detail=result.stderr or "Failed to open port")
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Error opening port: {e}")
         raise HTTPException(status_code=500, detail="Error al abrir puerto")
 
 @app.post("/api/ports/close")
@@ -842,7 +859,10 @@ def close_port(req: PortRequest, username: str = Depends(get_current_username), 
              return {"status": "success", "message": f"Port {req.port}/{req.protocol} closed"}
         else:
              raise HTTPException(status_code=500, detail=result.stderr or "Failed to close port")
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Error closing port: {e}")
         raise HTTPException(status_code=500, detail="Error al cerrar puerto")
 
 @app.get("/api/sql-access")
