@@ -315,6 +315,7 @@ def write_file_content(path: str, content: str):
             move_result = run_sudo_command(["mv", tmp.name, path])
             if move_result.returncode == 0:
                 run_sudo_command(["chmod", "640", path])
+                run_sudo_command(["chown", "postgres:postgres", path])
                 return True
         finally:
             try:
@@ -325,8 +326,12 @@ def write_file_content(path: str, content: str):
 
 def ensure_pg_hba_include():
     content = read_file_content(PG_HBA_PATH)
-    include_line = f"include_if_exists '{PG_HBA_INCLUDE_PATH}'"
-    if include_line not in content:
+    include_line = f"include_if_exists {PG_HBA_INCLUDE_PATH}"
+    old_include_line = f"include_if_exists '{PG_HBA_INCLUDE_PATH}'"
+    if old_include_line in content:
+        content = content.replace(old_include_line, include_line)
+        write_file_content(PG_HBA_PATH, content)
+    elif include_line not in content:
         updated = content.rstrip("\n") + "\n" + include_line + "\n"
         write_file_content(PG_HBA_PATH, updated)
 
