@@ -35,6 +35,8 @@ Panel web para administrar un servidor PostgreSQL y el firewall del VPS.
 ssh root@servidor "cd /var/www/pg_manager && git pull origin main && bash deploy_remote.sh"
 ```
 
+El deploy aplica tambien `idle_session_timeout = 60s` en PostgreSQL para cerrar sesiones `idle` sin actividad.
+
 ## Ejecutar en local (desarrollo)
 1. Crear un entorno virtual y activar:
    - Windows: `python -m venv venv && venv\Scripts\activate`

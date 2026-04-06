@@ -21,6 +21,11 @@ echo "Actualizando watchdog..."
 cp server/pg_manager_watchdog.sh /usr/local/bin/pg_manager_watchdog.sh 2>/dev/null || true
 chmod +x /usr/local/bin/pg_manager_watchdog.sh 2>/dev/null || true
 
+echo "Actualizando configuracion de PostgreSQL..."
+cp server/configure_postgres_timeouts.sh /usr/local/bin/configure_postgres_timeouts.sh 2>/dev/null || true
+chmod +x /usr/local/bin/configure_postgres_timeouts.sh 2>/dev/null || true
+/usr/local/bin/configure_postgres_timeouts.sh
+
 systemctl daemon-reload
 systemctl restart pg_manager
 

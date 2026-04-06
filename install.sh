@@ -13,6 +13,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 APP_DIR="/var/www/pg_manager"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo -e "${CYAN}========================================${NC}"
 echo -e "${CYAN}  PostgreSQL Manager - Instalador${NC}"
@@ -175,6 +176,11 @@ fi
 
 systemctl restart postgresql
 
+# Aplicar timeouts persistentes para sesiones SQL inactivas
+cp "${SCRIPT_DIR}/server/configure_postgres_timeouts.sh" /usr/local/bin/configure_postgres_timeouts.sh
+chmod +x /usr/local/bin/configure_postgres_timeouts.sh
+/usr/local/bin/configure_postgres_timeouts.sh
+
 # ============================================================
 # 8. Desplegar aplicacion
 # ============================================================
@@ -183,7 +189,6 @@ echo -e "${YELLOW}[4/8] Desplegando aplicacion...${NC}"
 mkdir -p "$APP_DIR"
 
 # Copy project files (if running from repo clone)
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "${SCRIPT_DIR}/backend/main.py" ]; then
     cp -r "${SCRIPT_DIR}/backend" "$APP_DIR/"
     cp -r "${SCRIPT_DIR}/server" "$APP_DIR/" 2>/dev/null || true
