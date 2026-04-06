@@ -17,15 +17,17 @@ Web admin panel for managing a PostgreSQL server and VPS firewall (UFW) on a Kam
 ## Commands
 
 ```bash
-# Setup
-python -m venv .venv && .venv/Scripts/activate  # Windows
+# Local development (Windows)
+python -m venv .venv && .venv/Scripts/activate
 pip install -r backend/requirements.txt
-
-# Run locally (from backend/ directory)
+cp backend/.env.example backend/.env  # then fill in values
 cd backend && uvicorn main:app --host 127.0.0.1 --port 8000 --log-level info
 
-# Environment config
-cp backend/.env.example backend/.env  # then fill in values
+# Fresh VPS install (run as root on the server)
+git clone <repo> /var/www/pg_manager && cd /var/www/pg_manager && bash install.sh
+
+# Update existing VPS
+ssh root@server "cd /var/www/pg_manager && git pull origin main && bash deploy_remote.sh"
 ```
 
 There are no tests, linters, or CI configured in this project.
@@ -49,6 +51,17 @@ All API logic lives in one file: routes, auth, DB operations, firewall managemen
 - `backend/audit_db.py` — Interactive script to find/delete zombie databases and orphan users not tracked in `managed_clients`
 - `backend/cleanup_vps.py` — Drops ALL managed client databases/users and truncates metadata (destructive reset)
 - `backend/migrate_sql_access.py` — Creates the `sql_access_ips` and `sql_access_ip_databases` tables
+
+### Server Configs (`server/`)
+
+- `pg_manager.service` — Systemd unit file
+- `pg_manager_watchdog.sh` — Cron script (every minute) that restarts PostgreSQL or the app if down
+- `nginx_with_ssl.conf` / `nginx_ip_only.conf` — Nginx templates for domain+SSL or IP-only access
+
+### Deployment
+
+- `install.sh` — Interactive installer for fresh VPS. Prompts for admin credentials, domain/IP, installs all dependencies, configures PostgreSQL, Nginx, UFW, systemd, and watchdog cron.
+- `deploy_remote.sh` — Update script for already-installed VPS. Pulls code, reinstalls deps, restarts service.
 
 ### Frontend
 

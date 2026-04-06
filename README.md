@@ -23,7 +23,19 @@ Panel web para administrar un servidor PostgreSQL y el firewall del VPS.
 - Pausar/Reanudar DB: Implementado
 - Acceso SQL por IP: Implementado
 
-## Cómo ejecutar en local
+## Instalar en un VPS nuevo
+1. Clonar el repo en el servidor:
+   - `git clone <repo-url> /var/www/pg_manager && cd /var/www/pg_manager`
+2. Ejecutar el instalador interactivo (como root):
+   - `bash install.sh`
+3. El script pedira: usuario/contrasena admin, dominio (o IP), y configurara todo automaticamente.
+
+## Actualizar un VPS existente
+```bash
+ssh root@servidor "cd /var/www/pg_manager && git pull origin main && bash deploy_remote.sh"
+```
+
+## Ejecutar en local (desarrollo)
 1. Crear un entorno virtual y activar:
    - Windows: `python -m venv venv && venv\Scripts\activate`
 2. Instalar dependencias:
