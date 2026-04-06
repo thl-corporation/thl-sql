@@ -10,7 +10,10 @@ echo "Configurando PostgreSQL: idle_session_timeout=${IDLE_SESSION_TIMEOUT}"
 
 sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
 ALTER SYSTEM SET idle_session_timeout = '${IDLE_SESSION_TIMEOUT}';
-SELECT pg_reload_conf();
 SQL
+
+systemctl restart postgresql
+
+sudo -u postgres psql -Atqc "show idle_session_timeout;"
 
 echo "PostgreSQL actualizado."
