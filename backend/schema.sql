@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS managed_clients (
     db_name TEXT NOT NULL,
     db_user TEXT NOT NULL,
     db_password TEXT NOT NULL,
+    is_public BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
