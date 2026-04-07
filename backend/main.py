@@ -8,6 +8,7 @@ import secrets
 import string
 import os
 import ipaddress
+import shutil
 import psutil
 import subprocess
 import re
@@ -54,8 +55,28 @@ POOLING_ENABLED = os.getenv("POOLING_ENABLED", "false").lower() in ("1", "true",
 PGBOUNCER_HOST = os.getenv("PGBOUNCER_HOST", "127.0.0.1")
 PGBOUNCER_PORT = int(os.getenv("PGBOUNCER_PORT", "6432"))
 POOL_MODE = os.getenv("POOL_MODE", "transaction")
-PG_HBA_PATH = os.getenv("PG_HBA_PATH", "/etc/postgresql/16/main/pg_hba.conf")
-PG_HBA_INCLUDE_PATH = os.getenv("PG_HBA_INCLUDE_PATH", "/etc/postgresql/16/main/pg_hba_sql_manager.conf")
+
+
+def detect_pg_hba_path():
+    env_value = os.getenv("PG_HBA_PATH")
+    if env_value:
+        return env_value
+    candidates = [
+        "/etc/postgresql/16/main/pg_hba.conf",
+        "/etc/postgresql/15/main/pg_hba.conf",
+        "/var/lib/pgsql/data/pg_hba.conf",
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[0]
+
+
+PG_HBA_PATH = detect_pg_hba_path()
+PG_HBA_INCLUDE_PATH = os.getenv(
+    "PG_HBA_INCLUDE_PATH",
+    os.path.join(os.path.dirname(PG_HBA_PATH), "pg_hba_sql_manager.conf"),
+)
 
 # Auth Configuration
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
@@ -364,6 +385,188 @@ def parse_sql_access_rules(output: str):
             allowed.append(source)
     return allowed, public_access
 
+
+def parse_firewalld_sql_access(output: str):
+    allowed = []
+    for line in output.splitlines():
+        if "port port=\"5432\"" not in line:
+            continue
+        match = re.search(r"source address=\"([^\"]+)\"", line)
+        if match:
+            cidr = match.group(1)
+            if cidr not in allowed:
+                allowed.append(cidr)
+    return allowed
+
+
+def detect_firewall_backend():
+    preferred = os.getenv("FIREWALL_BACKEND", "").strip().lower()
+    if preferred in ("ufw", "firewalld"):
+        return preferred
+    if os.path.exists("/usr/sbin/ufw") or os.path.exists("/sbin/ufw") or shutil.which("ufw"):
+        return "ufw"
+    if shutil.which("firewall-cmd"):
+        return "firewalld"
+    return "none"
+
+
+FIREWALL_BACKEND = detect_firewall_backend()
+
+
+def run_firewall_command(cmd_args):
+    if FIREWALL_BACKEND == "ufw":
+        return run_sudo_command(["ufw"] + cmd_args)
+    if FIREWALL_BACKEND == "firewalld":
+        return run_sudo_command(["firewall-cmd"] + cmd_args)
+    return subprocess.CompletedProcess(cmd_args, 1, stdout="", stderr="No firewall backend available")
+
+
+def get_firewall_status_payload():
+    if FIREWALL_BACKEND == "ufw":
+        status_result = run_firewall_command(["status"])
+        if status_result.returncode != 0:
+            return {"backend": "ufw", "status": "error", "detail": status_result.stderr, "ports": [], "public_sql": False}
+        output = status_result.stdout
+        lines = output.splitlines()
+        ports = []
+        for line in lines:
+            if "ALLOW" not in line:
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            port_proto = parts[0]
+            if "/" in port_proto:
+                p, proto = port_proto.split("/", 1)
+            else:
+                p, proto = port_proto, "any"
+            if str(p) == "5432":
+                continue
+            if not any(item["port"] == p and item["protocol"] == proto for item in ports):
+                ports.append({"port": p, "protocol": proto})
+        _, public_sql = parse_sql_access_rules(output)
+        is_active = any("Status: active" in line for line in lines)
+        return {
+            "backend": "ufw",
+            "status": "active" if is_active else "inactive",
+            "detail": None,
+            "ports": ports,
+            "public_sql": public_sql,
+        }
+
+    if FIREWALL_BACKEND == "firewalld":
+        state_result = run_firewall_command(["--state"])
+        if state_result.returncode != 0:
+            return {
+                "backend": "firewalld",
+                "status": "error",
+                "detail": state_result.stderr,
+                "ports": [],
+                "public_sql": False,
+            }
+        ports_result = run_firewall_command(["--zone=public", "--list-ports"])
+        rich_result = run_firewall_command(["--zone=public", "--list-rich-rules"])
+        listed_ports = ports_result.stdout.strip().split()
+        ports = []
+        for token in listed_ports:
+            if "/" not in token:
+                continue
+            p, proto = token.split("/", 1)
+            if str(p) == "5432":
+                continue
+            ports.append({"port": p, "protocol": proto})
+        public_sql = "5432/tcp" in listed_ports
+        return {
+            "backend": "firewalld",
+            "status": "active",
+            "detail": None,
+            "ports": ports,
+            "public_sql": public_sql,
+            "rich_rules": rich_result.stdout if rich_result.returncode == 0 else "",
+        }
+
+    return {"backend": "none", "status": "error", "detail": "No firewall backend configured", "ports": [], "public_sql": False}
+
+
+def allow_port_rule(port: int, protocol: str):
+    if FIREWALL_BACKEND == "ufw":
+        return run_firewall_command(["allow", f"{port}/{protocol}"])
+    if FIREWALL_BACKEND == "firewalld":
+        add_result = run_firewall_command(["--zone=public", "--add-port", f"{port}/{protocol}", "--permanent"])
+        if add_result.returncode != 0:
+            return add_result
+        return run_firewall_command(["--reload"])
+    return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+
+
+def revoke_port_rule(port: int, protocol: str):
+    if FIREWALL_BACKEND == "ufw":
+        return run_firewall_command(["delete", "allow", f"{port}/{protocol}"])
+    if FIREWALL_BACKEND == "firewalld":
+        del_result = run_firewall_command(["--zone=public", "--remove-port", f"{port}/{protocol}", "--permanent"])
+        if del_result.returncode != 0:
+            return del_result
+        return run_firewall_command(["--reload"])
+    return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+
+
+def sql_rich_rule(ip_value: str):
+    try:
+        net = ipaddress.ip_network(ip_value, strict=False)
+    except Exception:
+        net = ipaddress.ip_network("0.0.0.0/0")
+    family = "ipv6" if net.version == 6 else "ipv4"
+    return f'rule family="{family}" source address="{ip_value}" port protocol="tcp" port="5432" accept'
+
+
+def allow_sql_firewall(ip_value: str):
+    if ip_value == "0.0.0.0/0":
+        if FIREWALL_BACKEND == "ufw":
+            return run_firewall_command(["allow", "5432/tcp"])
+        if FIREWALL_BACKEND == "firewalld":
+            add_result = run_firewall_command(["--zone=public", "--add-port", "5432/tcp", "--permanent"])
+            if add_result.returncode != 0:
+                return add_result
+            return run_firewall_command(["--reload"])
+        return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+
+    if FIREWALL_BACKEND == "ufw":
+        return run_firewall_command(["allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"])
+    if FIREWALL_BACKEND == "firewalld":
+        add_result = run_firewall_command(["--zone=public", "--add-rich-rule", sql_rich_rule(ip_value), "--permanent"])
+        if add_result.returncode != 0:
+            return add_result
+        return run_firewall_command(["--reload"])
+    return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+
+
+def revoke_sql_firewall(ip_value: str):
+    if ip_value == "0.0.0.0/0":
+        if FIREWALL_BACKEND == "ufw":
+            return run_firewall_command(["delete", "allow", "5432/tcp"])
+        if FIREWALL_BACKEND == "firewalld":
+            del_result = run_firewall_command(["--zone=public", "--remove-port", "5432/tcp", "--permanent"])
+            if del_result.returncode != 0:
+                return del_result
+            return run_firewall_command(["--reload"])
+        return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+
+    if FIREWALL_BACKEND == "ufw":
+        return run_firewall_command(["delete", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"])
+    if FIREWALL_BACKEND == "firewalld":
+        del_result = run_firewall_command(["--zone=public", "--remove-rich-rule", sql_rich_rule(ip_value), "--permanent"])
+        if del_result.returncode != 0:
+            return del_result
+        return run_firewall_command(["--reload"])
+    return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+
+
+def set_sql_public_access(enabled: bool):
+    if enabled:
+        allow_sql_firewall("0.0.0.0/0")
+    else:
+        revoke_sql_firewall("0.0.0.0/0")
+
 def read_file_content(path: str):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -450,11 +653,8 @@ def rebuild_pg_hba_rules():
     if result.returncode != 0:
         run_sudo_command(["systemctl", "restart", "postgresql"])
 
-    # Manage UFW for Anywhere access if needed
-    if has_public:
-        run_sudo_command(["ufw", "allow", "5432/tcp"])
-    else:
-        run_sudo_command(["ufw", "delete", "allow", "5432/tcp"])
+    # Keep SQL public exposure aligned with metadata.
+    set_sql_public_access(has_public)
 
 def encrypt_secret(value: str):
     return fernet.encrypt(value.encode()).decode()
@@ -914,50 +1114,19 @@ def get_stats(username: str = Depends(get_current_username)):
 @app.get("/api/ports")
 def get_ports(username: str = Depends(get_current_username)):
     try:
-        # Check ufw status using helper
-        cmd = ["ufw", "status"]
-        result = run_sudo_command(cmd)
-        
-        if result.returncode != 0:
-             return {"status": "error", "message": "Could not get firewall status", "detail": result.stderr, "ports": []}
-        
-        output = result.stdout
-        lines = output.splitlines()
-        
-        ports = []
-        is_active = False
-        
-        for line in lines:
-            if "Status: active" in line:
-                is_active = True
-                continue
-            
-            if "ALLOW" in line:
-                parts = line.split()
-                if len(parts) >= 2:
-                    port_proto = parts[0]
-                    # action = parts[1] # ALLOW
-                    
-                    if "/" in port_proto:
-                        p, proto = port_proto.split("/")
-                    else:
-                        p = port_proto
-                        proto = "any"
-                    if str(p) == "5432":
-                        continue
-                        
-                    # Avoid duplicates (v6)
-                    exists = False
-                    for existing in ports:
-                        if existing["port"] == p and existing["protocol"] == proto:
-                            exists = True
-                            break
-                    if not exists:
-                        ports.append({"port": p, "protocol": proto})
-
+        payload = get_firewall_status_payload()
+        if payload.get("status") == "error":
+            return {
+                "status": "error",
+                "message": "Could not get firewall status",
+                "detail": payload.get("detail"),
+                "backend": payload.get("backend"),
+                "ports": [],
+            }
         return {
-            "status": "active" if is_active else "inactive", 
-            "ports": ports
+            "status": payload.get("status", "inactive"),
+            "backend": payload.get("backend", FIREWALL_BACKEND),
+            "ports": payload.get("ports", []),
         }
     except Exception as e:
         print(f"Error getting ports: {e}")
@@ -970,8 +1139,7 @@ def open_port(req: PortRequest, username: str = Depends(get_current_username), c
             raise HTTPException(status_code=403, detail="Puerto SQL se gestiona por IP")
         if not is_port_allowed(req.port):
             raise HTTPException(status_code=403, detail="Puerto no permitido")
-        cmd = ["ufw", "allow", f"{req.port}/{req.protocol}"]
-        result = run_sudo_command(cmd)
+        result = allow_port_rule(req.port, req.protocol)
         
         if result.returncode == 0:
             return {"status": "success", "message": f"Port {req.port}/{req.protocol} opened"}
@@ -990,8 +1158,7 @@ def close_port(req: PortRequest, username: str = Depends(get_current_username), 
             raise HTTPException(status_code=403, detail="Puerto SQL se gestiona por IP")
         if not is_port_allowed(req.port):
             raise HTTPException(status_code=403, detail="Puerto no permitido")
-        cmd = ["ufw", "delete", "allow", f"{req.port}/{req.protocol}"]
-        result = run_sudo_command(cmd)
+        result = revoke_port_rule(req.port, req.protocol)
 
         if result.returncode == 0:
              return {"status": "success", "message": f"Port {req.port}/{req.protocol} closed"}
@@ -1028,15 +1195,24 @@ def get_sql_access(username: str = Depends(get_current_username)):
         cur.close()
         conn.close()
     try:
-        cmd = ["ufw", "status"]
-        result = run_sudo_command(cmd)
-        if result.returncode != 0:
-            return {"status": "error", "message": "Could not get firewall status", "detail": result.stderr, "allowed": allowed, "public_access": False, "entries": entries}
-        output = result.stdout
-        lines = output.splitlines()
-        is_active = any("Status: active" in line for line in lines)
-        _, public_access = parse_sql_access_rules(output)
-        return {"status": "active" if is_active else "inactive", "allowed": allowed, "public_access": public_access, "entries": entries}
+        payload = get_firewall_status_payload()
+        if payload.get("status") == "error":
+            return {
+                "status": "error",
+                "message": "Could not get firewall status",
+                "detail": payload.get("detail"),
+                "backend": payload.get("backend"),
+                "allowed": allowed,
+                "public_access": False,
+                "entries": entries,
+            }
+        return {
+            "status": payload.get("status", "inactive"),
+            "backend": payload.get("backend", FIREWALL_BACKEND),
+            "allowed": allowed,
+            "public_access": payload.get("public_sql", False),
+            "entries": entries,
+        }
     except Exception as e:
         return {"status": "error", "message": str(e), "allowed": allowed, "public_access": False, "entries": entries}
 
@@ -1078,11 +1254,7 @@ def allow_sql_access(req: SqlAccessAssignRequest, username: str = Depends(get_cu
         finally:
             cur.close()
             conn.close()
-        if ip_value == "0.0.0.0/0":
-            cmd = ["ufw", "allow", "5432/tcp"]
-        else:
-            cmd = ["ufw", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"]
-        result = run_sudo_command(cmd)
+        result = allow_sql_firewall(ip_value)
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail=result.stderr or "Failed to allow IP")
         rebuild_pg_hba_rules()
@@ -1108,11 +1280,7 @@ def revoke_sql_access(req: SqlAccessRequest, username: str = Depends(get_current
         finally:
             cur.close()
             conn.close()
-        if ip_value == "0.0.0.0/0":
-            cmd = ["ufw", "delete", "allow", "5432/tcp"]
-        else:
-            cmd = ["ufw", "delete", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"]
-        result = run_sudo_command(cmd)
+        result = revoke_sql_firewall(ip_value)
         if result.returncode == 0:
             rebuild_pg_hba_rules()
             return {"status": "success", "message": f"IP {ip_value} revoked"}
@@ -1150,6 +1318,7 @@ def get_config(username: str = Depends(get_current_username)):
         "public_db_host": PUBLIC_DB_HOST,
         "public_db_port": PUBLIC_DB_PORT,
         "pooling_enabled": POOLING_ENABLED,
+        "firewall_backend": FIREWALL_BACKEND,
         "pool_mode": POOL_MODE,
         "postgres_port": DB_PORT,
         "pgbouncer_host": PGBOUNCER_HOST,

@@ -10,11 +10,11 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "backend", ".env"))
 
-BASE_URL = os.getenv("BASE_URL", "https://sql.thlcorporation.com")
+BASE_URL = os.getenv("BASE_URL", "https://sql.example.com")
 USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 PASSWORD = os.getenv("ADMIN_PASSWORD")
 TEST_PORT_ENV = os.getenv("TEST_PORT", "443").strip()
-TEST_SQL_IP = os.getenv("TEST_SQL_IP", "144.91.101.204/32").strip()
+TEST_SQL_IP = os.getenv("TEST_SQL_IP", "203.0.113.10/32").strip()
 REQUIRE_POOLING = os.getenv("REQUIRE_POOLING", "true").lower() in ("1", "true", "yes")
 
 if not PASSWORD:

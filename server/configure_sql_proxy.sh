@@ -1,16 +1,54 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/var/www/pg_manager}"
 ENV_FILE="${1:-${APP_DIR}/backend/.env}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+OS_FAMILY=""
+PKG_TOOL=""
+
 read_env_value() {
     local key="$1"
-    if [ ! -f "$ENV_FILE" ]; then
+    if [ ! -f "${ENV_FILE}" ]; then
         return 0
     fi
-    grep -m1 "^${key}=" "$ENV_FILE" | cut -d'=' -f2- || true
+    grep -m1 "^${key}=" "${ENV_FILE}" | cut -d'=' -f2- || true
+}
+
+detect_os() {
+    # shellcheck disable=SC1091
+    source /etc/os-release
+    if [[ "${ID:-}" =~ (debian|ubuntu) ]] || [[ "${ID_LIKE:-}" =~ (debian|ubuntu) ]]; then
+        OS_FAMILY="debian"
+        PKG_TOOL="apt"
+        return
+    fi
+    if [[ "${ID:-}" =~ (rhel|rocky|almalinux|centos|fedora) ]] || [[ "${ID_LIKE:-}" =~ (rhel|fedora|centos) ]]; then
+        OS_FAMILY="rhel"
+        if command -v dnf >/dev/null 2>&1; then
+            PKG_TOOL="dnf"
+        else
+            PKG_TOOL="yum"
+        fi
+        return
+    fi
+    echo "Distribucion no soportada para configure_sql_proxy.sh"
+    exit 1
+}
+
+pkg_install() {
+    if [ "${PKG_TOOL}" = "apt" ]; then
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pgbouncer haproxy
+        return
+    fi
+    if [ "${PKG_TOOL}" = "dnf" ]; then
+        dnf install -y epel-release >/dev/null 2>&1 || true
+        dnf install -y pgbouncer haproxy >/dev/null
+        return
+    fi
+    yum install -y pgbouncer haproxy >/dev/null
 }
 
 PUBLIC_DB_PORT="${PUBLIC_DB_PORT:-$(read_env_value PUBLIC_DB_PORT)}"
@@ -81,32 +119,31 @@ render_template() {
         -e "s|__ADMIN_USERS__|${PGBOUNCER_ADMIN_USERS}|g" \
         -e "s|__STATS_USERS__|${PGBOUNCER_STATS_USERS}|g" \
         -e "s|__AUTH_FILE__|${PGBOUNCER_AUTH_FILE}|g" \
-        "$template_path"
+        "${template_path}"
 }
 
 echo "Instalando stack de pooling SQL (PgBouncer + HAProxy)..."
-apt-get update -qq
-apt-get install -y -qq pgbouncer haproxy > /dev/null
+detect_os
+pkg_install
 
 if ! id -u pgbouncer >/dev/null 2>&1; then
-    useradd --system --home /var/lib/pgbouncer --create-home --shell /usr/sbin/nologin pgbouncer
+    useradd --system --home /var/lib/pgbouncer --create-home --shell /usr/sbin/nologin pgbouncer || true
 fi
 
 mkdir -p /etc/pgbouncer
-touch "$PGBOUNCER_AUTH_FILE"
-chown postgres:postgres "$PGBOUNCER_AUTH_FILE"
-chmod 640 "$PGBOUNCER_AUTH_FILE"
+touch "${PGBOUNCER_AUTH_FILE}"
+chown postgres:postgres "${PGBOUNCER_AUTH_FILE}" || true
+chmod 640 "${PGBOUNCER_AUTH_FILE}"
 
 if [ -f /etc/default/pgbouncer ]; then
     sed -i "s/^START=.*/START=1/" /etc/default/pgbouncer || true
 fi
-
 if [ -f /etc/default/haproxy ]; then
     sed -i "s/^ENABLED=.*/ENABLED=1/" /etc/default/haproxy || true
 fi
 
 render_template "${SCRIPT_DIR}/pgbouncer.ini.template" > /etc/pgbouncer/pgbouncer.ini
-chown postgres:postgres /etc/pgbouncer/pgbouncer.ini
+chown postgres:postgres /etc/pgbouncer/pgbouncer.ini || true
 chmod 640 /etc/pgbouncer/pgbouncer.ini
 
 render_template "${SCRIPT_DIR}/haproxy.cfg.template" > /etc/haproxy/haproxy.cfg
@@ -118,7 +155,7 @@ if command -v haproxy >/dev/null 2>&1; then
 fi
 
 systemctl daemon-reload
-systemctl enable pgbouncer haproxy
+systemctl enable --now pgbouncer haproxy
 systemctl restart pgbouncer
 systemctl restart haproxy
 

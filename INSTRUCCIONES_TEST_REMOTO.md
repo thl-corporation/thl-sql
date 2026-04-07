@@ -27,6 +27,20 @@
 python verify_remote.py
 ```
 
+## Runner unificado de pruebas
+
+En el VPS puedes ejecutar la suite local+load con:
+
+```bash
+bash server/run_test_suite.sh
+```
+
+Y si quieres incluir validacion remota:
+
+```bash
+RUN_REMOTE_TEST=1 bash server/run_test_suite.sh
+```
+
 ## Resultado esperado
 
 - Login exitoso.
