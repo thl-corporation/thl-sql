@@ -1,0 +1,26 @@
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    daemon
+    maxconn __HAPROXY_MAXCONN__
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+
+defaults
+    mode tcp
+    log global
+    option tcplog
+    option clitcpka
+    option srvtcpka
+    timeout connect __TIMEOUT_CONNECT__
+    timeout client __TIMEOUT_CLIENT__
+    timeout server __TIMEOUT_SERVER__
+    timeout queue __TIMEOUT_QUEUE__
+
+frontend sql_proxy_frontend
+    bind *:__PUBLIC_PORT__ backlog __LISTEN_BACKLOG__
+    default_backend pgbouncer_backend
+
+backend pgbouncer_backend
+    balance leastconn
+    option tcp-check
+    server pgbouncer_local 127.0.0.1:__PGBOUNCER_PORT__ check maxconn __MAX_CLIENT_CONN__

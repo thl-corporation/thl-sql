@@ -1,0 +1,1328 @@
+from fastapi import FastAPI, HTTPException, Depends, status, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from pydantic import BaseModel, Field
+from typing import Literal
+import psycopg2
+from psycopg2 import sql
+import secrets
+import string
+import os
+import ipaddress
+import shutil
+import psutil
+import subprocess
+import re
+import time
+import tempfile
+from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from cryptography.fernet import Fernet
+import sys
+
+# Load environment variables
+load_dotenv()
+
+app = FastAPI(title="PostgreSQL Manager", version="1.0.0")
+
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+if allowed_origins_env:
+    allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+else:
+    allowed_origins = ["http://localhost:8000", "http://127.0.0.1:8000"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Configuration
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = int(os.getenv("DB_PORT", "5432"))
+DB_NAME = os.getenv("DB_NAME", "postgres")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD", None)
+PUBLIC_DB_HOST = os.getenv("PUBLIC_DB_HOST", DB_HOST)
+PUBLIC_DB_PORT = int(os.getenv("PUBLIC_DB_PORT", "5432"))
+POOLING_ENABLED = os.getenv("POOLING_ENABLED", "false").lower() in ("1", "true", "yes")
+PGBOUNCER_HOST = os.getenv("PGBOUNCER_HOST", "127.0.0.1")
+PGBOUNCER_PORT = int(os.getenv("PGBOUNCER_PORT", "6432"))
+POOL_MODE = os.getenv("POOL_MODE", "transaction")
+
+
+def detect_pg_hba_path():
+    env_value = os.getenv("PG_HBA_PATH")
+    if env_value:
+        return env_value
+    candidates = [
+        "/etc/postgresql/16/main/pg_hba.conf",
+        "/etc/postgresql/15/main/pg_hba.conf",
+        "/var/lib/pgsql/data/pg_hba.conf",
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[0]
+
+
+PG_HBA_PATH = detect_pg_hba_path()
+PG_HBA_INCLUDE_PATH = os.getenv(
+    "PG_HBA_INCLUDE_PATH",
+    os.path.join(os.path.dirname(PG_HBA_PATH), "pg_hba_sql_manager.conf"),
+)
+
+# Auth Configuration
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+if not ADMIN_PASSWORD:
+    raise ValueError("ADMIN_PASSWORD env var is required")
+COOKIE_NAME = os.getenv("COOKIE_NAME", "access_token")
+ROOT_PASSWORD = os.getenv("ROOT_PASSWORD", None)
+CSRF_COOKIE_NAME = os.getenv("CSRF_COOKIE_NAME", "csrf_token")
+CSRF_HEADER_NAME = os.getenv("CSRF_HEADER_NAME", "x-csrf-token")
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in ("1", "true", "yes")
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+if not ENCRYPTION_KEY:
+    raise ValueError("ENCRYPTION_KEY env var is required")
+try:
+    fernet = Fernet(ENCRYPTION_KEY.encode())
+except Exception as e:
+    raise ValueError("ENCRYPTION_KEY env var is invalid") from e
+LOGIN_RATE_LIMIT = int(os.getenv("LOGIN_RATE_LIMIT", "8"))
+LOGIN_RATE_WINDOW_SEC = int(os.getenv("LOGIN_RATE_WINDOW_SEC", "300"))
+SESSION_TTL_SEC = int(os.getenv("SESSION_TTL_SEC", "86400"))
+TRUSTED_PROXY = os.getenv("TRUSTED_PROXY", "false").lower() in ("1", "true", "yes")
+ALLOWED_PORTS_ENV = os.getenv("ALLOWED_PORTS", "22,80,443,5432")
+login_attempts = {}
+session_store = {}
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    if COOKIE_SECURE:
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+    return response
+
+def run_sudo_command(cmd_args):
+    """
+    Run a command with sudo. 
+    If ROOT_PASSWORD is set, try using sudo -S with password.
+    Otherwise, try sudo or direct execution.
+    """
+    # 1. Try running directly (if already root)
+    try:
+        # Use full path for ufw if possible, or assume it's in PATH
+        # Common paths: /usr/sbin/ufw, /sbin/ufw
+        # We'll just use the command name and rely on PATH first
+        result = subprocess.run(cmd_args, capture_output=True, text=True)
+        if result.returncode == 0:
+            return result
+    except Exception:
+        pass
+
+    # 2. Try sudo without password (if nopasswd configured)
+    try:
+        sudo_cmd = ["sudo", "-n"] + cmd_args
+        result = subprocess.run(sudo_cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            return result
+    except Exception:
+        pass
+
+    # 3. Try sudo with password if available
+    if ROOT_PASSWORD:
+        try:
+            sudo_cmd = ["sudo", "-S"] + cmd_args
+            # Pass password to stdin
+            result = subprocess.run(
+                sudo_cmd, 
+                input=ROOT_PASSWORD + "\n", 
+                capture_output=True, 
+                text=True
+            )
+            return result
+        except Exception as e:
+            print(f"Sudo with password failed: {e}")
+            
+    # Return the last result (likely failed) or a dummy failed result
+    return subprocess.CompletedProcess(cmd_args, 1, stdout="", stderr="Command failed and no sudo method worked")
+
+def get_python_executable():
+    deployed_python = os.path.join(PROJECT_ROOT, "venv", "bin", "python3")
+    if os.path.exists(deployed_python):
+        return deployed_python
+    return sys.executable
+
+def sync_pgbouncer_auth():
+    if not POOLING_ENABLED:
+        return True
+    script_path = os.path.join(PROJECT_ROOT, "server", "sync_pgbouncer_auth.py")
+    env_file = os.path.join(BASE_DIR, ".env")
+    if not os.path.exists(script_path):
+        print(f"PgBouncer sync script not found: {script_path}")
+        return False
+    cmd = [get_python_executable(), script_path, "--env-file", env_file]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"PgBouncer auth sync failed: {result.stderr or result.stdout}")
+        return False
+    return True
+
+def get_pgbouncer_connection():
+    conn = psycopg2.connect(
+        database="pgbouncer",
+        user=DB_USER,
+        host=PGBOUNCER_HOST,
+        port=PGBOUNCER_PORT,
+        password=DB_PASSWORD
+    )
+    conn.autocommit = True
+    return conn
+
+def get_service_status(service_name: str):
+    result = run_sudo_command(["systemctl", "is-active", service_name])
+    if result.returncode != 0:
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+def get_pooling_snapshot():
+    summary = {
+        "cl_active": 0,
+        "cl_waiting": 0,
+        "sv_active": 0,
+        "sv_idle": 0,
+        "pools": []
+    }
+    conn = get_pgbouncer_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SHOW POOLS")
+        columns = [desc[0] for desc in cur.description]
+        for row in cur.fetchall():
+            pool = dict(zip(columns, row))
+            summary["pools"].append(pool)
+            summary["cl_active"] += int(pool.get("cl_active", 0))
+            summary["cl_waiting"] += int(pool.get("cl_waiting", 0))
+            summary["sv_active"] += int(pool.get("sv_active", 0))
+            summary["sv_idle"] += int(pool.get("sv_idle", 0))
+        cur.execute("SHOW VERSION")
+        version_row = cur.fetchone()
+        summary["version"] = version_row[0] if version_row else None
+        return summary
+    finally:
+        cur.close()
+        conn.close()
+
+def parse_allowed_ports(value: str):
+    raw = value.strip().lower()
+    if raw in ("", "*", "any"):
+        return None
+    ports = set()
+    for part in value.split(","):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        if "-" in chunk:
+            start_str, end_str = chunk.split("-", 1)
+            if start_str.isdigit() and end_str.isdigit():
+                start = int(start_str)
+                end = int(end_str)
+                for p in range(min(start, end), max(start, end) + 1):
+                    if 1 <= p <= 65535:
+                        ports.add(p)
+            continue
+        if chunk.isdigit():
+            p = int(chunk)
+            if 1 <= p <= 65535:
+                ports.add(p)
+    return ports
+
+ALLOWED_PORTS = parse_allowed_ports(ALLOWED_PORTS_ENV)
+
+def is_port_allowed(port: int):
+    return ALLOWED_PORTS is None or port in ALLOWED_PORTS
+
+def get_session(request: Request):
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    session = session_store.get(token)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    if session["expires_at"] < time.time():
+        del session_store[token]
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return session
+
+class ClientRequest(BaseModel):
+    client_name: str = Field(..., min_length=1, max_length=80)
+    db_name: str = Field(..., min_length=1, max_length=63)
+
+class UpdateClientRequest(BaseModel):
+    client_name: str | None = Field(None, min_length=1, max_length=80)
+    new_password: str | None = None
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class PortRequest(BaseModel):
+    port: int = Field(..., ge=1, le=65535)
+    protocol: Literal["tcp", "udp"] = "tcp"
+
+class SqlAccessRequest(BaseModel):
+    ip: str
+
+class SqlAccessAssignRequest(BaseModel):
+    ip: str
+    databases: list[str] = Field(default_factory=list, min_length=1)
+
+def get_current_username(request: Request):
+    session = get_session(request)
+    return session["username"]
+
+def get_client_ip(request: Request):
+    if TRUSTED_PROXY:
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+        real_ip = request.headers.get("x-real-ip")
+        if real_ip:
+            return real_ip.strip()
+    return request.client.host if request.client else "unknown"
+
+def enforce_login_rate_limit(request: Request):
+    ip = get_client_ip(request)
+    now = time.time()
+    entries = login_attempts.get(ip, [])
+    entries = [ts for ts in entries if now - ts < LOGIN_RATE_WINDOW_SEC]
+    if len(entries) >= LOGIN_RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Demasiados intentos, intenta más tarde")
+    entries.append(now)
+    login_attempts[ip] = entries
+
+def reset_login_rate_limit(request: Request):
+    ip = get_client_ip(request)
+    if ip in login_attempts:
+        del login_attempts[ip]
+
+def require_csrf(request: Request):
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return True
+    session = get_session(request)
+    csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)
+    csrf_header = request.headers.get(CSRF_HEADER_NAME)
+    if not csrf_cookie or not csrf_header:
+        raise HTTPException(status_code=403, detail="CSRF token missing or invalid")
+    if not secrets.compare_digest(csrf_cookie, csrf_header):
+        raise HTTPException(status_code=403, detail="CSRF token missing or invalid")
+    if not secrets.compare_digest(csrf_cookie, session["csrf"]):
+        raise HTTPException(status_code=403, detail="CSRF token missing or invalid")
+    return True
+
+def normalize_identifier(value: str, label: str):
+    cleaned = value.strip().lower().replace(" ", "_")
+    if not re.fullmatch(r"[a-z0-9_]{1,63}", cleaned):
+        raise HTTPException(status_code=400, detail=f"{label} inválido")
+    return cleaned
+
+def normalize_client_name(value: str, label: str):
+    cleaned = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9 _-]{1,80}", cleaned):
+        raise HTTPException(status_code=400, detail=f"{label} inválido")
+    return cleaned
+
+def normalize_user_slug(value: str, label: str):
+    cleaned = value.strip().lower().replace(" ", "_").replace("-", "_")
+    cleaned = re.sub(r"[^a-z0-9_]", "", cleaned)
+    if not re.fullmatch(r"[a-z0-9_]{1,63}", cleaned):
+        raise HTTPException(status_code=400, detail=f"{label} inválido")
+    return cleaned
+
+def normalize_sql_ip(value: str):
+    cleaned = value.strip()
+    try:
+        net = ipaddress.ip_network(cleaned, strict=False)
+    except Exception:
+        raise HTTPException(status_code=400, detail="IP/CIDR inválido")
+    if str(net) == "::/0":
+        raise HTTPException(status_code=400, detail="Usa 0.0.0.0/0 para acceso público")
+    return str(net)
+
+def parse_sql_access_rules(output: str):
+    allowed = []
+    public_access = False
+    for line in output.splitlines():
+        if "ALLOW" not in line:
+            continue
+        parts = line.split()
+        if "ALLOW" not in parts:
+            continue
+        if not any(p.startswith("5432/") for p in parts):
+            continue
+        allow_index = parts.index("ALLOW")
+        source_start = allow_index + 1
+        if source_start < len(parts) and parts[source_start] == "IN":
+            source_start += 1
+        if source_start >= len(parts):
+            continue
+        source = " ".join(parts[source_start:])
+        if source.startswith("Anywhere"):
+            public_access = True
+            continue
+        if source not in allowed:
+            allowed.append(source)
+    return allowed, public_access
+
+
+def parse_firewalld_sql_access(output: str):
+    allowed = []
+    for line in output.splitlines():
+        if "port port=\"5432\"" not in line:
+            continue
+        match = re.search(r"source address=\"([^\"]+)\"", line)
+        if match:
+            cidr = match.group(1)
+            if cidr not in allowed:
+                allowed.append(cidr)
+    return allowed
+
+
+def detect_firewall_backend():
+    preferred = os.getenv("FIREWALL_BACKEND", "").strip().lower()
+    if preferred in ("ufw", "firewalld"):
+        return preferred
+    if os.path.exists("/usr/sbin/ufw") or os.path.exists("/sbin/ufw") or shutil.which("ufw"):
+        return "ufw"
+    if shutil.which("firewall-cmd"):
+        return "firewalld"
+    return "none"
+
+
+FIREWALL_BACKEND = detect_firewall_backend()
+
+
+def run_firewall_command(cmd_args):
+    if FIREWALL_BACKEND == "ufw":
+        return run_sudo_command(["ufw"] + cmd_args)
+    if FIREWALL_BACKEND == "firewalld":
+        return run_sudo_command(["firewall-cmd"] + cmd_args)
+    return subprocess.CompletedProcess(cmd_args, 1, stdout="", stderr="No firewall backend available")
+
+
+def get_firewall_status_payload():
+    if FIREWALL_BACKEND == "ufw":
+        status_result = run_firewall_command(["status"])
+        if status_result.returncode != 0:
+            return {"backend": "ufw", "status": "error", "detail": status_result.stderr, "ports": [], "public_sql": False}
+        output = status_result.stdout
+        lines = output.splitlines()
+        ports = []
+        for line in lines:
+            if "ALLOW" not in line:
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            port_proto = parts[0]
+            if "/" in port_proto:
+                p, proto = port_proto.split("/", 1)
+            else:
+                p, proto = port_proto, "any"
+            if str(p) == "5432":
+                continue
+            if not any(item["port"] == p and item["protocol"] == proto for item in ports):
+                ports.append({"port": p, "protocol": proto})
+        _, public_sql = parse_sql_access_rules(output)
+        is_active = any("Status: active" in line for line in lines)
+        return {
+            "backend": "ufw",
+            "status": "active" if is_active else "inactive",
+            "detail": None,
+            "ports": ports,
+            "public_sql": public_sql,
+        }
+
+    if FIREWALL_BACKEND == "firewalld":
+        state_result = run_firewall_command(["--state"])
+        if state_result.returncode != 0:
+            return {
+                "backend": "firewalld",
+                "status": "error",
+                "detail": state_result.stderr,
+                "ports": [],
+                "public_sql": False,
+            }
+        ports_result = run_firewall_command(["--zone=public", "--list-ports"])
+        rich_result = run_firewall_command(["--zone=public", "--list-rich-rules"])
+        listed_ports = ports_result.stdout.strip().split()
+        ports = []
+        for token in listed_ports:
+            if "/" not in token:
+                continue
+            p, proto = token.split("/", 1)
+            if str(p) == "5432":
+                continue
+            ports.append({"port": p, "protocol": proto})
+        public_sql = "5432/tcp" in listed_ports
+        return {
+            "backend": "firewalld",
+            "status": "active",
+            "detail": None,
+            "ports": ports,
+            "public_sql": public_sql,
+            "rich_rules": rich_result.stdout if rich_result.returncode == 0 else "",
+        }
+
+    return {"backend": "none", "status": "error", "detail": "No firewall backend configured", "ports": [], "public_sql": False}
+
+
+def allow_port_rule(port: int, protocol: str):
+    if FIREWALL_BACKEND == "ufw":
+        return run_firewall_command(["allow", f"{port}/{protocol}"])
+    if FIREWALL_BACKEND == "firewalld":
+        add_result = run_firewall_command(["--zone=public", "--add-port", f"{port}/{protocol}", "--permanent"])
+        if add_result.returncode != 0:
+            return add_result
+        return run_firewall_command(["--reload"])
+    return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+
+
+def revoke_port_rule(port: int, protocol: str):
+    if FIREWALL_BACKEND == "ufw":
+        return run_firewall_command(["delete", "allow", f"{port}/{protocol}"])
+    if FIREWALL_BACKEND == "firewalld":
+        del_result = run_firewall_command(["--zone=public", "--remove-port", f"{port}/{protocol}", "--permanent"])
+        if del_result.returncode != 0:
+            return del_result
+        return run_firewall_command(["--reload"])
+    return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+
+
+def sql_rich_rule(ip_value: str):
+    try:
+        net = ipaddress.ip_network(ip_value, strict=False)
+    except Exception:
+        net = ipaddress.ip_network("0.0.0.0/0")
+    family = "ipv6" if net.version == 6 else "ipv4"
+    return f'rule family="{family}" source address="{ip_value}" port protocol="tcp" port="5432" accept'
+
+
+def allow_sql_firewall(ip_value: str):
+    if ip_value == "0.0.0.0/0":
+        if FIREWALL_BACKEND == "ufw":
+            return run_firewall_command(["allow", "5432/tcp"])
+        if FIREWALL_BACKEND == "firewalld":
+            add_result = run_firewall_command(["--zone=public", "--add-port", "5432/tcp", "--permanent"])
+            if add_result.returncode != 0:
+                return add_result
+            return run_firewall_command(["--reload"])
+        return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+
+    if FIREWALL_BACKEND == "ufw":
+        return run_firewall_command(["allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"])
+    if FIREWALL_BACKEND == "firewalld":
+        add_result = run_firewall_command(["--zone=public", "--add-rich-rule", sql_rich_rule(ip_value), "--permanent"])
+        if add_result.returncode != 0:
+            return add_result
+        return run_firewall_command(["--reload"])
+    return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+
+
+def revoke_sql_firewall(ip_value: str):
+    if ip_value == "0.0.0.0/0":
+        if FIREWALL_BACKEND == "ufw":
+            return run_firewall_command(["delete", "allow", "5432/tcp"])
+        if FIREWALL_BACKEND == "firewalld":
+            del_result = run_firewall_command(["--zone=public", "--remove-port", "5432/tcp", "--permanent"])
+            if del_result.returncode != 0:
+                return del_result
+            return run_firewall_command(["--reload"])
+        return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+
+    if FIREWALL_BACKEND == "ufw":
+        return run_firewall_command(["delete", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"])
+    if FIREWALL_BACKEND == "firewalld":
+        del_result = run_firewall_command(["--zone=public", "--remove-rich-rule", sql_rich_rule(ip_value), "--permanent"])
+        if del_result.returncode != 0:
+            return del_result
+        return run_firewall_command(["--reload"])
+    return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+
+
+def set_sql_public_access(enabled: bool):
+    if enabled:
+        allow_sql_firewall("0.0.0.0/0")
+    else:
+        revoke_sql_firewall("0.0.0.0/0")
+
+def read_file_content(path: str):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        result = run_sudo_command(["cat", path])
+        if result.returncode == 0:
+            return result.stdout
+    return ""
+
+def write_file_content(path: str, content: str):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+            return True
+    except Exception:
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        try:
+            tmp.write(content.encode("utf-8"))
+            tmp.flush()
+            tmp.close()
+            move_result = run_sudo_command(["mv", tmp.name, path])
+            if move_result.returncode == 0:
+                run_sudo_command(["chmod", "640", path])
+                run_sudo_command(["chown", "postgres:postgres", path])
+                return True
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+    return False
+
+def ensure_pg_hba_include():
+    content = read_file_content(PG_HBA_PATH)
+    include_line = f"include_if_exists {PG_HBA_INCLUDE_PATH}"
+    old_include_line = f"include_if_exists '{PG_HBA_INCLUDE_PATH}'"
+    if old_include_line in content:
+        content = content.replace(old_include_line, include_line)
+        write_file_content(PG_HBA_PATH, content)
+    elif include_line not in content:
+        updated = content.rstrip("\n") + "\n" + include_line + "\n"
+        write_file_content(PG_HBA_PATH, updated)
+
+def rebuild_pg_hba_rules():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT ips.ip_cidr, map.db_name, mc.db_user
+            FROM sql_access_ips ips
+            JOIN sql_access_ip_databases map ON map.ip_id = ips.id
+            JOIN managed_clients mc ON mc.db_name = map.db_name
+            ORDER BY ips.ip_cidr, map.db_name
+        """)
+        all_rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    has_public = any(row[0] == "0.0.0.0/0" for row in all_rows)
+
+    lines = []
+    if POOLING_ENABLED:
+        seen_pairs = set()
+        for _, db_name, db_user in all_rows:
+            key = (db_name, db_user)
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            lines.append(f"host {db_name} {db_user} 127.0.0.1/32 scram-sha-256")
+    else:
+        for ip_cidr, db_name, db_user in all_rows:
+            lines.append(f"hostssl {db_name} {db_user} {ip_cidr} scram-sha-256")
+            lines.append(f"hostnossl {db_name} {db_user} {ip_cidr} md5")
+    ensure_pg_hba_include()
+    content = "\n".join(lines)
+    if content and not content.endswith("\n"):
+        content += "\n"
+    write_file_content(PG_HBA_INCLUDE_PATH, content)
+
+    # Reload Postgres
+    result = run_sudo_command(["systemctl", "reload", "postgresql"])
+    if result.returncode != 0:
+        run_sudo_command(["systemctl", "restart", "postgresql"])
+
+    # Keep SQL public exposure aligned with metadata.
+    set_sql_public_access(has_public)
+
+def encrypt_secret(value: str):
+    return fernet.encrypt(value.encode()).decode()
+
+def generate_password(length=24):
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for i in range(length))
+
+def get_db_connection():
+    try:
+        conn = psycopg2.connect(
+            database=DB_NAME,
+            user=DB_USER,
+            host=DB_HOST,
+            port=DB_PORT,
+            password=DB_PASSWORD
+        )
+        conn.autocommit = True
+        return conn
+    except Exception as e:
+        print(f"Connection error: {e}")
+        raise HTTPException(status_code=500, detail="Could not connect to database system")
+
+def init_metadata_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS managed_clients (
+                id SERIAL PRIMARY KEY,
+                client_name TEXT NOT NULL,
+                db_name TEXT NOT NULL,
+                db_user TEXT NOT NULL,
+                db_password TEXT NOT NULL,
+                is_public BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        # Ensure 'is_public' exists if the table was already created
+        cur.execute("""
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                               WHERE table_name='managed_clients' AND column_name='is_public') THEN
+                    ALTER TABLE managed_clients ADD COLUMN is_public BOOLEAN DEFAULT FALSE;
+                END IF;
+            END $$;
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sql_access_ips (
+                id SERIAL PRIMARY KEY,
+                ip_cidr TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sql_access_ip_databases (
+                id SERIAL PRIMARY KEY,
+                ip_id INTEGER NOT NULL REFERENCES sql_access_ips(id) ON DELETE CASCADE,
+                db_name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (ip_id, db_name)
+            );
+        """)
+    except Exception as e:
+        print(f"Error initializing metadata DB: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
+# Initialize DB on startup
+try:
+    init_metadata_db()
+    sync_pgbouncer_auth()
+except Exception as e:
+    print(f"Startup Warning: Could not initialize database: {e}")
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    try:
+        get_session(request)
+        return RedirectResponse(url="/")
+    except HTTPException:
+        pass
+    
+    login_html_path = os.path.join(STATIC_DIR, "login.html")
+    with open(login_html_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+@app.post("/login")
+def login(creds: LoginRequest, response: Response, request: Request):
+    enforce_login_rate_limit(request)
+    if not ADMIN_PASSWORD:
+         raise HTTPException(status_code=500, detail="Server configuration error")
+
+    correct_username = secrets.compare_digest(creds.username, ADMIN_USERNAME)
+    correct_password = secrets.compare_digest(creds.password, ADMIN_PASSWORD)
+    
+    if not (correct_username and correct_password):
+        raise HTTPException(status_code=400, detail="Usuario o contraseña incorrectos")
+    reset_login_rate_limit(request)
+    
+    session_token = "session_" + secrets.token_urlsafe(32)
+    csrf_token = secrets.token_urlsafe(32)
+    session_store[session_token] = {
+        "username": ADMIN_USERNAME,
+        "expires_at": time.time() + SESSION_TTL_SEC,
+        "csrf": csrf_token
+    }
+
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=session_token,
+        httponly=True,
+        max_age=SESSION_TTL_SEC,
+        samesite="strict",
+        secure=COOKIE_SECURE
+    )
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=csrf_token,
+        httponly=False,
+        max_age=SESSION_TTL_SEC,
+        samesite="strict",
+        secure=COOKIE_SECURE
+    )
+    return {"message": "Login successful"}
+
+@app.post("/logout")
+def logout(response: Response, request: Request, csrf_ok: bool = Depends(require_csrf)):
+    token = request.cookies.get(COOKIE_NAME)
+    if token and token in session_store:
+        del session_store[token]
+    response.delete_cookie(COOKIE_NAME)
+    response.delete_cookie(CSRF_COOKIE_NAME)
+    return {"message": "Logged out"}
+
+@app.get("/health")
+def health():
+    try:
+        conn = get_db_connection()
+        conn.close()
+        return {"status": "ok", "database": "connected"}
+    except Exception as e:
+        print(f"Health check failed: {e}")
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "database": "disconnected"}
+        )
+
+@app.get("/", response_class=HTMLResponse)
+def read_root(request: Request):
+    try:
+        get_session(request)
+    except HTTPException:
+        return RedirectResponse(url="/login")
+        
+    index_html_path = os.path.join(STATIC_DIR, "index.html")
+    with open(index_html_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+@app.post("/create-client")
+def create_client(request: ClientRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    client_name = normalize_client_name(request.client_name, "Nombre de cliente")
+    client_slug = normalize_user_slug(client_name, "Nombre de cliente")
+    db_user = f"user_{client_slug}"
+    db_pass = generate_password()
+    db_name = normalize_identifier(request.db_name, "Nombre de base de datos")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+        # 1. Create User
+        cur.execute(sql.SQL("CREATE USER {} WITH PASSWORD %s").format(sql.Identifier(db_user)), [db_pass])
+        
+        # 2. Create Database
+        cur.execute(sql.SQL("CREATE DATABASE {} OWNER {}").format(
+            sql.Identifier(db_name),
+            sql.Identifier(db_user)
+        ))
+        
+        # 3. Revoke connect on database from public
+        cur.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM public").format(sql.Identifier(db_name)))
+        cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(sql.Identifier(db_name), sql.Identifier(db_user)))
+        cur.execute(sql.SQL("REVOKE CONNECT ON DATABASE postgres FROM {}").format(sql.Identifier(db_user)))
+        
+        # 4. Save metadata
+        cur.execute(
+            "INSERT INTO managed_clients (client_name, db_name, db_user, db_password) VALUES (%s, %s, %s, %s)",
+            (client_name, db_name, db_user, encrypt_secret(db_pass))
+        )
+
+        pool_sync_ok = sync_pgbouncer_auth()
+
+        response = {
+            "status": "success",
+            "connection_info": {
+                "host": PUBLIC_DB_HOST, 
+                "port": PUBLIC_DB_PORT,
+                "database": db_name,
+                "user": db_user,
+                "password": db_pass,
+                "connection_mode": "pooled" if POOLING_ENABLED else "direct",
+                "pool_mode": POOL_MODE if POOLING_ENABLED else None,
+                "connection_string": f"postgresql://{db_user}:{db_pass}@{PUBLIC_DB_HOST}:{PUBLIC_DB_PORT}/{db_name}"
+            }
+        }
+        if POOLING_ENABLED:
+            response["pooling"] = {
+                "enabled": True,
+                "mode": POOL_MODE,
+                "pgbouncer_port": PGBOUNCER_PORT
+            }
+            if not pool_sync_ok:
+                response["warning"] = "PgBouncer auth sync failed. Run server/sync_pgbouncer_auth.py on the server."
+        return response
+    except Exception as e:
+        print(f"Error creating client: {e}")
+        raise HTTPException(status_code=400, detail="Error al crear cliente")
+    finally:
+        cur.close()
+        conn.close()
+
+@app.get("/clients")
+def list_clients(username: str = Depends(get_current_username)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id, client_name, db_name, db_user, db_password, created_at FROM managed_clients ORDER BY created_at DESC")
+        rows = cur.fetchall()
+        db_names = [row[2] for row in rows]
+        db_allow_map = {}
+        if db_names:
+            cur.execute("SELECT datname, datallowconn FROM pg_database WHERE datname = ANY(%s)", (db_names,))
+            for name, allow in cur.fetchall():
+                db_allow_map[name] = allow
+        clients = []
+        for row in rows:
+            allow_conn = db_allow_map.get(row[2], True)
+            clients.append({
+                "id": row[0],
+                "client_name": row[1],
+                "db_name": row[2],
+                "db_user": row[3],
+                "created_at": row[5].isoformat() if row[5] else None,
+                "paused": not allow_conn
+            })
+        return clients
+    finally:
+        cur.close()
+        conn.close()
+
+@app.put("/clients/{client_id}")
+def update_client(client_id: int, request: UpdateClientRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    pool_sync_ok = True
+    try:
+        cur.execute("SELECT db_user, client_name FROM managed_clients WHERE id = %s", (client_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        
+        db_user, current_client_name = row
+        
+        if request.new_password:
+            # Update Postgres User Password
+            cur.execute(sql.SQL("ALTER USER {} WITH PASSWORD %s").format(sql.Identifier(db_user)), [request.new_password])
+            # Update Metadata
+            cur.execute("UPDATE managed_clients SET db_password = %s WHERE id = %s", (encrypt_secret(request.new_password), client_id))
+            pool_sync_ok = sync_pgbouncer_auth()
+            
+        if request.client_name and request.client_name != current_client_name:
+            new_client_name = normalize_client_name(request.client_name, "Nombre de cliente")
+            cur.execute("UPDATE managed_clients SET client_name = %s WHERE id = %s", (new_client_name, client_id))
+            
+        response = {"status": "success", "message": "Client updated successfully"}
+        if POOLING_ENABLED and request.new_password and not pool_sync_ok:
+            response["warning"] = "PgBouncer auth sync failed. Run server/sync_pgbouncer_auth.py on the server."
+        return response
+    except Exception as e:
+        print(f"Error updating client: {e}")
+        raise HTTPException(status_code=500, detail="Error al actualizar cliente")
+    finally:
+        cur.close()
+        conn.close()
+
+@app.delete("/clients/{client_id}")
+def delete_client(client_id: int, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # Get client details first
+        cur.execute("SELECT db_name, db_user FROM managed_clients WHERE id = %s", (client_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        
+        db_name, db_user = row
+
+        # Drop Database
+        # Force drop by terminating backends (Deep Clean Step 1)
+        print(f"Terminating connections for {db_name}...")
+        cur.execute(sql.SQL("""
+            SELECT pg_terminate_backend(pg_stat_activity.pid)
+            FROM pg_stat_activity
+            WHERE pg_stat_activity.datname = {}
+            AND pid <> pg_backend_pid();
+        """).format(sql.Literal(db_name)))
+        
+        print(f"Dropping database {db_name}...")
+        cur.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(db_name)))
+        
+        # Verify if database is really gone
+        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
+        if cur.fetchone():
+            raise Exception(f"Failed to drop database {db_name}. It still exists in PostgreSQL.")
+
+        # Drop User (Deep Clean Step 2)
+        print(f"Checking existence of user {db_user}...")
+        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (db_user,))
+        if cur.fetchone():
+            print(f"Cleaning up user {db_user}...")
+            try:
+                # Remove any objects owned by the user in the current database (postgres)
+                # This ensures no 'zombie' objects are left behind in the main DB
+                cur.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(db_user)))
+            except Exception as e:
+                print(f"Warning during DROP OWNED: {e}")
+
+            print(f"Dropping user {db_user}...")
+            cur.execute(sql.SQL("DROP USER IF EXISTS {}").format(sql.Identifier(db_user)))
+        
+        # Remove from metadata (Deep Clean Step 3)
+        print(f"Removing metadata for client {client_id}...")
+        cur.execute("DELETE FROM managed_clients WHERE id = %s", (client_id,))
+
+        cur.execute("DELETE FROM sql_access_ip_databases WHERE db_name = %s", (db_name,))
+        cur.execute("""
+            DELETE FROM sql_access_ips
+            WHERE id NOT IN (SELECT DISTINCT ip_id FROM sql_access_ip_databases)
+        """)
+        rebuild_pg_hba_rules()
+        pool_sync_ok = sync_pgbouncer_auth()
+
+        response = {"status": "success", "message": f"Client {client_id} deleted (Deep Clean)"}
+        if POOLING_ENABLED and not pool_sync_ok:
+            response["warning"] = "PgBouncer auth sync failed. Run server/sync_pgbouncer_auth.py on the server."
+        return response
+    except Exception as e:
+        print(f"Error deleting client: {e}")
+        raise HTTPException(status_code=500, detail="Error al eliminar cliente")
+    finally:
+        cur.close()
+        conn.close()
+
+@app.post("/clients/{client_id}/pause")
+def pause_client(client_id: int, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT db_name, db_user FROM managed_clients WHERE id = %s", (client_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        db_name, db_user = row
+
+        cur.execute(sql.SQL("ALTER DATABASE {} ALLOW_CONNECTIONS false").format(sql.Identifier(db_name)))
+        cur.execute(sql.SQL("REVOKE CONNECT ON DATABASE {} FROM {}").format(sql.Identifier(db_name), sql.Identifier(db_user)))
+        cur.execute(sql.SQL("""
+            SELECT pg_terminate_backend(pg_stat_activity.pid)
+            FROM pg_stat_activity
+            WHERE pg_stat_activity.datname = {}
+            AND pid <> pg_backend_pid();
+        """).format(sql.Literal(db_name)))
+
+        return {"status": "success", "message": f"Database {db_name} paused"}
+    except Exception as e:
+        print(f"Error pausing database: {e}")
+        raise HTTPException(status_code=500, detail="Error al pausar base de datos")
+    finally:
+        cur.close()
+        conn.close()
+
+@app.post("/clients/{client_id}/resume")
+def resume_client(client_id: int, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT db_name, db_user FROM managed_clients WHERE id = %s", (client_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        db_name, db_user = row
+
+        cur.execute(sql.SQL("ALTER DATABASE {} ALLOW_CONNECTIONS true").format(sql.Identifier(db_name)))
+        cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(sql.Identifier(db_name), sql.Identifier(db_user)))
+
+        return {"status": "success", "message": f"Database {db_name} resumed"}
+    except Exception as e:
+        print(f"Error resuming database: {e}")
+        raise HTTPException(status_code=500, detail="Error al reanudar base de datos")
+    finally:
+        cur.close()
+        conn.close()
+
+@app.get("/list-databases")
+def list_databases(username: str = Depends(get_current_username)):
+    # Keep this for compatibility or debug
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT datname FROM pg_database WHERE datistemplate = false;")
+    rows = cur.fetchall()
+    dbs = [row[0] for row in rows]
+    cur.close()
+    conn.close()
+    return {"databases": dbs}
+
+@app.get("/api/stats")
+def get_stats(username: str = Depends(get_current_username)):
+    # interval=None returns immediately, comparing to last call. 
+    # First call may be 0, but subsequent calls will be accurate.
+    cpu_percent = psutil.cpu_percent(interval=None) 
+    memory = psutil.virtual_memory()
+    
+    # Get connections per DB
+    conn = get_db_connection()
+    cur = conn.cursor()
+    db_connections = {}
+    try:
+        cur.execute("""
+            SELECT datname, count(*) 
+            FROM pg_stat_activity 
+            WHERE datname IS NOT NULL 
+            GROUP BY datname;
+        """)
+        rows = cur.fetchall()
+        for row in rows:
+            db_connections[row[0]] = row[1]
+    except Exception as e:
+        print(f"Error getting db stats: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
+    return {
+        "cpu": cpu_percent,
+        "memory": {
+            "total": memory.total,
+            "percent": memory.percent,
+            "used": memory.used
+        },
+        "connections": db_connections
+    }
+
+@app.get("/api/ports")
+def get_ports(username: str = Depends(get_current_username)):
+    try:
+        payload = get_firewall_status_payload()
+        if payload.get("status") == "error":
+            return {
+                "status": "error",
+                "message": "Could not get firewall status",
+                "detail": payload.get("detail"),
+                "backend": payload.get("backend"),
+                "ports": [],
+            }
+        return {
+            "status": payload.get("status", "inactive"),
+            "backend": payload.get("backend", FIREWALL_BACKEND),
+            "ports": payload.get("ports", []),
+        }
+    except Exception as e:
+        print(f"Error getting ports: {e}")
+        return {"status": "error", "message": str(e), "ports": []}
+
+@app.post("/api/ports/open")
+def open_port(req: PortRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    try:
+        if req.port == 5432:
+            raise HTTPException(status_code=403, detail="Puerto SQL se gestiona por IP")
+        if not is_port_allowed(req.port):
+            raise HTTPException(status_code=403, detail="Puerto no permitido")
+        result = allow_port_rule(req.port, req.protocol)
+        
+        if result.returncode == 0:
+            return {"status": "success", "message": f"Port {req.port}/{req.protocol} opened"}
+        else:
+            raise HTTPException(status_code=500, detail=result.stderr or "Failed to open port")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error opening port: {e}")
+        raise HTTPException(status_code=500, detail="Error al abrir puerto")
+
+@app.post("/api/ports/close")
+def close_port(req: PortRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    try:
+        if req.port == 5432:
+            raise HTTPException(status_code=403, detail="Puerto SQL se gestiona por IP")
+        if not is_port_allowed(req.port):
+            raise HTTPException(status_code=403, detail="Puerto no permitido")
+        result = revoke_port_rule(req.port, req.protocol)
+
+        if result.returncode == 0:
+             return {"status": "success", "message": f"Port {req.port}/{req.protocol} closed"}
+        else:
+             raise HTTPException(status_code=500, detail=result.stderr or "Failed to close port")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error closing port: {e}")
+        raise HTTPException(status_code=500, detail="Error al cerrar puerto")
+
+@app.get("/api/sql-access")
+def get_sql_access(username: str = Depends(get_current_username)):
+    entries = []
+    allowed = []
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT ips.ip_cidr,
+                   COALESCE(array_agg(map.db_name ORDER BY map.db_name) FILTER (WHERE map.db_name IS NOT NULL), ARRAY[]::text[])
+            FROM sql_access_ips ips
+            LEFT JOIN sql_access_ip_databases map ON map.ip_id = ips.id
+            GROUP BY ips.ip_cidr
+            ORDER BY ips.ip_cidr
+        """)
+        rows = cur.fetchall()
+        for ip_cidr, db_names in rows:
+            entries.append({"ip": ip_cidr, "databases": db_names})
+            allowed.append(ip_cidr)
+    except Exception:
+        return {"status": "error", "message": "No se pudo leer la configuración SQL", "allowed": [], "public_access": False, "entries": []}
+    finally:
+        cur.close()
+        conn.close()
+    try:
+        payload = get_firewall_status_payload()
+        if payload.get("status") == "error":
+            return {
+                "status": "error",
+                "message": "Could not get firewall status",
+                "detail": payload.get("detail"),
+                "backend": payload.get("backend"),
+                "allowed": allowed,
+                "public_access": False,
+                "entries": entries,
+            }
+        return {
+            "status": payload.get("status", "inactive"),
+            "backend": payload.get("backend", FIREWALL_BACKEND),
+            "allowed": allowed,
+            "public_access": payload.get("public_sql", False),
+            "entries": entries,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "allowed": allowed, "public_access": False, "entries": entries}
+
+@app.post("/api/sql-access/allow")
+def allow_sql_access(req: SqlAccessAssignRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    try:
+        ip_value = normalize_sql_ip(req.ip)
+        requested = [normalize_identifier(db, "Base de datos") for db in req.databases]
+        unique_dbs = []
+        seen = set()
+        for db_name in requested:
+            if db_name not in seen:
+                seen.add(db_name)
+                unique_dbs.append(db_name)
+        if not unique_dbs:
+            raise HTTPException(status_code=400, detail="Debes seleccionar al menos una base de datos")
+        conn = get_db_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT db_name FROM managed_clients WHERE db_name = ANY(%s)", (unique_dbs,))
+            existing = {row[0] for row in cur.fetchall()}
+            missing = [db for db in unique_dbs if db not in existing]
+            if missing:
+                raise HTTPException(status_code=400, detail="Base de datos no encontrada")
+            cur.execute("""
+                INSERT INTO sql_access_ips (ip_cidr)
+                VALUES (%s)
+                ON CONFLICT (ip_cidr) DO UPDATE SET ip_cidr = EXCLUDED.ip_cidr
+                RETURNING id
+            """, (ip_value,))
+            ip_id = cur.fetchone()[0]
+            cur.execute("DELETE FROM sql_access_ip_databases WHERE ip_id = %s", (ip_id,))
+            for db_name in unique_dbs:
+                cur.execute("""
+                    INSERT INTO sql_access_ip_databases (ip_id, db_name)
+                    VALUES (%s, %s)
+                    ON CONFLICT (ip_id, db_name) DO NOTHING
+                """, (ip_id, db_name))
+        finally:
+            cur.close()
+            conn.close()
+        result = allow_sql_firewall(ip_value)
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=result.stderr or "Failed to allow IP")
+        rebuild_pg_hba_rules()
+        return {"status": "success", "message": f"IP {ip_value} allowed", "databases": unique_dbs}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error al permitir IP")
+
+@app.post("/api/sql-access/revoke")
+def revoke_sql_access(req: SqlAccessRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    try:
+        ip_value = normalize_sql_ip(req.ip)
+        conn = get_db_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT id FROM sql_access_ips WHERE ip_cidr = %s", (ip_value,))
+            row = cur.fetchone()
+            if row:
+                ip_id = row[0]
+                cur.execute("DELETE FROM sql_access_ip_databases WHERE ip_id = %s", (ip_id,))
+                cur.execute("DELETE FROM sql_access_ips WHERE id = %s", (ip_id,))
+        finally:
+            cur.close()
+            conn.close()
+        result = revoke_sql_firewall(ip_value)
+        if result.returncode == 0:
+            rebuild_pg_hba_rules()
+            return {"status": "success", "message": f"IP {ip_value} revoked"}
+        raise HTTPException(status_code=500, detail=result.stderr or "Failed to revoke IP")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error al revocar IP")
+
+@app.get("/api/pooling/status")
+def get_pooling_status(username: str = Depends(get_current_username)):
+    data = {
+        "enabled": POOLING_ENABLED,
+        "mode": POOL_MODE,
+        "public_port": PUBLIC_DB_PORT,
+        "postgres_port": DB_PORT,
+        "pgbouncer_host": PGBOUNCER_HOST,
+        "pgbouncer_port": PGBOUNCER_PORT,
+        "services": {
+            "haproxy": get_service_status("haproxy") if POOLING_ENABLED else "disabled",
+            "pgbouncer": get_service_status("pgbouncer") if POOLING_ENABLED else "disabled"
+        }
+    }
+    if not POOLING_ENABLED:
+        return data
+    try:
+        data["summary"] = get_pooling_snapshot()
+    except Exception as e:
+        data["summary"] = {"error": str(e)}
+    return data
+
+@app.get("/api/config")
+def get_config(username: str = Depends(get_current_username)):
+    return {
+        "public_db_host": PUBLIC_DB_HOST,
+        "public_db_port": PUBLIC_DB_PORT,
+        "pooling_enabled": POOLING_ENABLED,
+        "firewall_backend": FIREWALL_BACKEND,
+        "pool_mode": POOL_MODE,
+        "postgres_port": DB_PORT,
+        "pgbouncer_host": PGBOUNCER_HOST,
+        "pgbouncer_port": PGBOUNCER_PORT
+    }
+
+app.mount("/static", StaticFiles(directory="static"), name="static")

@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/
+
+# Local automation metadata
+.trae/
+
+# Logs / runtime
+*.log
+*.pid
+*.out
+
+# Secrets and keys
+.env
+.env.*
+!.env.example
+!*.env.example
+!.env.*.example
+!*.env.*.example
+ssh_keys/
+ssh_keys_*/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.ovpn
+*.kubeconfig
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+# Archives that usually contain secrets/backups
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# Build artifacts
+dist/
+build/
+coverage/

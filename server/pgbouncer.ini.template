@@ -1,0 +1,29 @@
+[databases]
+* = host=127.0.0.1 port=__POSTGRES_PORT__
+
+[pgbouncer]
+listen_addr = 127.0.0.1
+listen_port = __PGBOUNCER_PORT__
+unix_socket_dir = /var/run/postgresql
+listen_backlog = __LISTEN_BACKLOG__
+auth_type = plain
+auth_file = __AUTH_FILE__
+admin_users = __ADMIN_USERS__
+stats_users = __STATS_USERS__
+pool_mode = __POOL_MODE__
+max_client_conn = __MAX_CLIENT_CONN__
+default_pool_size = __DEFAULT_POOL_SIZE__
+min_pool_size = __MIN_POOL_SIZE__
+reserve_pool_size = __RESERVE_POOL_SIZE__
+reserve_pool_timeout = __RESERVE_POOL_TIMEOUT_SEC__
+client_login_timeout = __CLIENT_LOGIN_TIMEOUT_SEC__
+query_wait_timeout = __QUERY_WAIT_TIMEOUT_SEC__
+server_login_retry = __SERVER_LOGIN_RETRY_SEC__
+server_reset_query = DISCARD ALL
+server_check_query = select 1
+server_check_delay = 30
+ignore_startup_parameters = extra_float_digits,options
+tcp_keepalive = 1
+log_connections = 1
+log_disconnections = 1
+log_pooler_errors = 1

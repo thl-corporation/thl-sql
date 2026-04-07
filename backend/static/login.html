@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - THL SQL Manager</title>
+    <script>
+        (function() {
+            const stored = localStorage.getItem('theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const theme = stored || (prefersDark ? 'dark' : 'light');
+            if (theme === 'dark') {
+                document.documentElement.classList.add('dark');
+            }
+        })();
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f0f7ff',
+                            100: '#d9e9ff',
+                            500: '#2f6bb0',
+                            600: '#245892',
+                            700: '#1f4a7a',
+                            900: '#14304f',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="h-full relative flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 antialiased">
+    <div class="absolute inset-0 pointer-events-none">
+        <div class="absolute -top-24 -left-24 h-72 w-72 rounded-full bg-brand-100/70 dark:bg-brand-900/40 blur-3xl"></div>
+        <div class="absolute -bottom-24 -right-24 h-72 w-72 rounded-full bg-slate-200/70 dark:bg-slate-800/60 blur-3xl"></div>
+    </div>
+    <div class="absolute top-4 right-4">
+        <button id="themeToggle" class="inline-flex items-center justify-center w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/60 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" aria-label="Cambiar tema" aria-pressed="false">
+            <span id="themeIconSun" class="hidden">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25M6.364 6.364l1.591 1.591M3 12h2.25M6.364 17.636l1.591-1.591M12 18.75V21M17.636 17.636l-1.591-1.591M18.75 12H21M17.636 6.364l-1.591 1.591M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+            </span>
+            <span id="themeIconMoon">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1111.21 3a7 7 0 109.79 9.79z" />
+                </svg>
+            </span>
+        </button>
+    </div>
+    <div class="sm:mx-auto sm:w-full sm:max-w-md">
+        <div class="mx-auto h-12 w-12 text-brand-600 dark:text-brand-100 flex items-center justify-center rounded-2xl bg-brand-50 dark:bg-brand-900/30">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-10 h-10">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
+            </svg>
+        </div>
+        <h2 class="mt-6 text-center text-3xl font-semibold tracking-tight text-slate-900 dark:text-white">THL SQL Manager</h2>
+        <p class="mt-2 text-center text-sm text-slate-500 dark:text-slate-400">
+            Ingresa tus credenciales de administrador
+        </p>
+    </div>
+
+    <div class="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
+        <div class="bg-white/80 dark:bg-slate-900/70 py-8 px-4 shadow-xl shadow-slate-200/40 dark:shadow-slate-950/40 sm:rounded-2xl sm:px-10 border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+            <form id="loginForm" class="space-y-6">
+                <div>
+                    <label for="username" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Usuario</label>
+                    <div class="mt-1">
+                        <input id="username" name="username" type="text" required class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2">
+                    </div>
+                </div>
+
+                <div>
+                    <label for="password" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Contraseña</label>
+                    <div class="mt-1">
+                        <input id="password" name="password" type="password" required class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2">
+                    </div>
+                </div>
+
+                <div id="errorMessage" class="hidden rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/40 p-4">
+                    <div class="flex">
+                        <div class="flex-shrink-0">
+                            <svg class="h-5 w-5 text-red-500 dark:text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+                            </svg>
+                        </div>
+                        <div class="ml-3">
+                            <h3 class="text-sm font-medium text-red-700 dark:text-red-200">Error de autenticación</h3>
+                            <div class="mt-2 text-sm text-red-600 dark:text-red-200">
+                                <p id="errorText">Credenciales incorrectas.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div>
+                    <button type="submit" id="submitBtn" class="flex w-full justify-center rounded-md border border-transparent bg-brand-600 py-2 px-4 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/60 focus:ring-offset-2 focus:ring-offset-white dark:focus:ring-offset-slate-950 transition-colors">
+                        Iniciar Sesión
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const themeToggle = document.getElementById('themeToggle');
+        const themeIconSun = document.getElementById('themeIconSun');
+        const themeIconMoon = document.getElementById('themeIconMoon');
+
+        function applyTheme(theme) {
+            if (theme === 'dark') {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+            localStorage.setItem('theme', theme);
+            if (themeToggle) {
+                themeToggle.setAttribute('aria-pressed', theme === 'dark');
+            }
+            if (themeIconSun && themeIconMoon) {
+                themeIconSun.classList.toggle('hidden', theme !== 'dark');
+                themeIconMoon.classList.toggle('hidden', theme === 'dark');
+            }
+        }
+
+        const storedTheme = localStorage.getItem('theme');
+        if (storedTheme) {
+            applyTheme(storedTheme);
+        } else {
+            applyTheme(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        }
+
+        if (themeToggle) {
+            themeToggle.addEventListener('click', () => {
+                const isDark = document.documentElement.classList.contains('dark');
+                applyTheme(isDark ? 'light' : 'dark');
+            });
+        }
+
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+            if (!localStorage.getItem('theme')) {
+                applyTheme(e.matches ? 'dark' : 'light');
+            }
+        });
+
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('submitBtn');
+            const errorDiv = document.getElementById('errorMessage');
+            const errorText = document.getElementById('errorText');
+            
+            // Reset state
+            btn.disabled = true;
+            btn.innerHTML = '<svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Validando...';
+            errorDiv.classList.add('hidden');
+
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await fetch('/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                if (response.ok) {
+                    window.location.href = '/';
+                } else {
+                    const data = await response.json();
+                    throw new Error(data.detail || 'Error al iniciar sesión');
+                }
+            } catch (err) {
+                errorText.innerText = err.message;
+                errorDiv.classList.remove('hidden');
+                btn.disabled = false;
+                btn.innerText = 'Iniciar Sesión';
+            }
+        });
+    </script>
+</body>
+</html>

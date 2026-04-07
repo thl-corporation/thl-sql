@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a reproducible problem in THL SQL.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the problem and expected behavior.
+      placeholder: A clear and concise description of the bug.
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Linux distro and version
+      placeholder: Ubuntu 24.04 / Rocky 9 / Debian 12 ...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run ...
+        2. Open ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and output
+      description: Paste relevant logs, errors, and command output.
+      render: shell
+    validations:
+      required: false
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Deployment mode
+      options:
+        - Domain
+        - IP and port
+    validations:
+      required: true

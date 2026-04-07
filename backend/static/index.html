@@ -1,0 +1,1188 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>THL SQL Manager</title>
+    <script>
+        (function() {
+            const stored = localStorage.getItem('theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const theme = stored || (prefersDark ? 'dark' : 'light');
+            if (theme === 'dark') {
+                document.documentElement.classList.add('dark');
+            }
+        })();
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f0f7ff',
+                            100: '#d9e9ff',
+                            500: '#2f6bb0',
+                            600: '#245892',
+                            700: '#1f4a7a',
+                            900: '#14304f',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 min-h-screen antialiased">
+    <nav class="bg-white/80 dark:bg-slate-900/80 backdrop-blur border-b border-slate-200/70 dark:border-slate-800/70">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <h1 class="text-xl font-semibold text-slate-900 dark:text-slate-100 tracking-tight">THL SQL Manager</h1>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span id="clock" class="text-sm font-mono text-slate-500 dark:text-slate-400"></span>
+                    <button id="themeToggle" class="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" aria-label="Cambiar tema" aria-pressed="false">
+                        <span id="themeIconSun" class="hidden">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25M6.364 6.364l1.591 1.591M3 12h2.25M6.364 17.636l1.591-1.591M12 18.75V21M17.636 17.636l-1.591-1.591M18.75 12H21M17.636 6.364l-1.591 1.591M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                        </span>
+                        <span id="themeIconMoon">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1111.21 3a7 7 0 109.79 9.79z" />
+                            </svg>
+                        </span>
+                    </button>
+                    <button id="logoutBtn" class="text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 font-medium px-3 py-2 rounded-lg text-sm transition-colors flex items-center border border-transparent hover:border-red-200/60 dark:hover:border-red-400/30">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 mr-1">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75" />
+                        </svg>
+                        Cerrar Sesión
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto py-10 px-4 sm:px-6 lg:px-8">
+        <!-- KPI Section -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl p-4 border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+                <h3 class="text-sm font-medium text-slate-500 dark:text-slate-400 mb-2">CPU Usage (Avg 10s)</h3>
+                <div class="relative h-40">
+                    <canvas id="cpuChart"></canvas>
+                </div>
+            </div>
+            <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl p-4 border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+                <h3 class="text-sm font-medium text-slate-500 dark:text-slate-400 mb-2">Memory Usage</h3>
+                <div class="relative h-40">
+                    <canvas id="memoryChart"></canvas>
+                </div>
+            </div>
+            <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl p-4 border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="text-sm font-medium text-slate-500 dark:text-slate-400">Conexiones Activas</h3>
+                    <select id="dbConnectionSelect" class="text-xs border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-200 rounded-md border px-2 py-1 max-w-[150px] focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/60" onchange="updateConnectionDisplay()">
+                        <option value="all">Todas</option>
+                        <!-- Options populated by JS -->
+                    </select>
+                </div>
+                <div class="flex items-center justify-center h-40">
+                    <span id="connectionCountDisplay" class="text-5xl font-bold text-brand-600 dark:text-brand-100">0</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Left Column: Create Form & Port Management -->
+            <div class="lg:col-span-1 space-y-6">
+                <!-- Create Form -->
+                <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl overflow-hidden border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+                    <div class="px-4 py-5 sm:p-6">
+                        <h2 class="text-lg font-semibold leading-6 text-slate-900 dark:text-slate-100 mb-4">Crear Nuevo Cliente</h2>
+                        <form id="createForm" class="space-y-6">
+                            <div>
+                                <label for="clientName" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nombre Cliente</label>
+                                <div class="mt-1">
+                                    <input type="text" id="clientName" placeholder="Ej: Tienda Online" required maxlength="80" pattern="[A-Za-z0-9 _-]{1,80}" class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label for="dbName" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nombre Base de Datos</label>
+                                <div class="mt-1">
+                                    <input type="text" id="dbName" placeholder="Ej: ecommerce_db" required maxlength="63" pattern="[A-Za-z0-9_]{1,63}" class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
+                                </div>
+                            </div>
+
+                            <div>
+                            <button type="submit" id="createClientButton" class="inline-flex justify-center rounded-md border border-transparent bg-brand-600 py-2 px-4 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/60 focus:ring-offset-2 focus:ring-offset-white dark:focus:ring-offset-slate-950 transition-colors w-full">
+                                    Generar Accesos
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Port Management -->
+                <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl overflow-hidden border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+                    <div class="px-4 py-5 sm:p-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-lg font-semibold leading-6 text-slate-900 dark:text-slate-100">Gestión de Puertos</h2>
+                            <button id="refreshPortsButton" class="text-xs text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white">Actualizar</button>
+                        </div>
+                        
+                        <!-- SQL Status -->
+                        <div id="sqlPortStatus" class="mb-4 p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 flex justify-between items-center">
+                            <div class="flex items-center">
+                                <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-900/30 dark:text-brand-100 mr-3">🐘</span>
+                                <div>
+                                    <div class="text-sm font-medium text-slate-900 dark:text-slate-100">Puerto SQL (5432)</div>
+                                    <div id="sqlStatusText" class="text-xs text-slate-500 dark:text-slate-400">Comprobando...</div>
+                                </div>
+                            </div>
+                            <div id="sqlStatusIndicator" class="h-3 w-3 rounded-full bg-slate-300 dark:bg-slate-700"></div>
+                        </div>
+            
+                        <!-- Add Port Form -->
+                        <form id="addPortForm" class="flex gap-2 mb-4">
+                            <input type="number" id="newPort" placeholder="Puerto" required class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
+                            <button type="submit" id="openPortButton" class="inline-flex justify-center rounded-md border border-transparent bg-brand-600 py-2 px-4 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/60">
+                                Abrir
+                            </button>
+                        </form>
+            
+                        <!-- Port List -->
+                        <div>
+                            <h3 class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Puertos Abiertos</h3>
+                            <ul id="portsList" class="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
+                                <li class="py-2 text-slate-500 dark:text-slate-400 text-center">Cargando...</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl overflow-hidden border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+                    <div class="px-4 py-5 sm:p-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-lg font-semibold leading-6 text-slate-900 dark:text-slate-100">Acceso SQL por IP</h2>
+                            <button id="refreshSqlAccessButton" class="text-xs text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white">Actualizar</button>
+                        </div>
+
+                        <form id="addSqlAccessForm" class="flex gap-2 mb-3">
+                            <input type="text" id="sqlAccessIp" placeholder="IP o CIDR (ej. 203.0.113.10/32)" required class="block w-full rounded-md border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 shadow-sm focus:border-brand-500 focus:ring-brand-500/30 sm:text-sm px-3 py-2 border">
+                            <button type="submit" id="allowSqlAccessButton" class="inline-flex justify-center rounded-md border border-transparent bg-brand-600 py-2 px-4 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/60">
+                                Permitir
+                            </button>
+                        </form>
+
+                        <div class="mb-4">
+                            <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Bases permitidas</div>
+                            <div id="sqlAccessDbList" class="mt-2 grid grid-cols-2 gap-2 max-h-28 overflow-y-auto rounded-xl border border-slate-200/70 dark:border-slate-800/70 bg-slate-50/70 dark:bg-slate-950/60 p-2 text-xs text-slate-600 dark:text-slate-300">
+                                <span class="col-span-2 text-slate-500 dark:text-slate-400 text-center">Cargando...</span>
+                            </div>
+                        </div>
+
+                        <div class="text-xs text-slate-500 dark:text-slate-400 mb-4">Solo las IPs permitidas podrán conectarse al puerto 5432. Usa <span class="font-mono font-semibold">0.0.0.0</span> para acceso público.</div>
+
+                        <div>
+                            <h3 class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">IPs permitidas</h3>
+                            <ul id="sqlAccessList" class="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
+                                <li class="py-2 text-slate-500 dark:text-slate-400 text-center">Cargando...</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- List Clients -->
+            <div class="lg:col-span-2">
+                <div class="bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl overflow-hidden border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+                    <div class="px-4 py-5 sm:px-6 flex justify-between items-center border-b border-slate-200/70 dark:border-slate-800/70">
+                        <h3 class="text-lg leading-6 font-semibold text-slate-900 dark:text-slate-100">Bases de Datos Gestionadas</h3>
+                        <button onclick="fetchClients()" class="text-sm text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white">
+                            Actualizar
+                        </button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-800">
+                            <thead class="bg-slate-50 dark:bg-slate-900/70">
+                                <tr>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider w-24">Acciones</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Cliente</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Base de Datos</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Credenciales</th>
+                                    <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Editar/Borrar</th>
+                                </tr>
+                            </thead>
+                            <tbody id="clientsTableBody" class="bg-white dark:bg-slate-950/40 divide-y divide-slate-200 dark:divide-slate-800">
+                                <!-- Loaded via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <!-- Result Box -->
+                <div id="result" class="hidden mt-6 bg-white/80 dark:bg-slate-900/70 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/40 rounded-2xl overflow-hidden border border-slate-200/70 dark:border-slate-800/70 backdrop-blur">
+                    <div class="px-4 py-5 sm:p-6">
+                        <div id="resultHeader" class="flex items-center mb-4">
+                            <!-- Icon -->
+                        </div>
+                        <div class="bg-slate-50 dark:bg-slate-950/60 rounded-xl p-4 border border-slate-200 dark:border-slate-800 overflow-x-auto relative">
+                            <button onclick="copyResultCode()" class="absolute top-2 right-2 text-slate-400 hover:text-brand-600 dark:text-slate-500 dark:hover:text-brand-100 p-1">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.381a9.06 9.06 0 001.5-.124A9.06 9.06 0 0021 17.835v-3.375c0-.621-.504-1.125-1.125-1.125H17.25M6.75 21L8.377 14.977A.75.75 0 019.102 14.5h4.136a.747.747 0 01.729.96l-1.694 5.253" />
+                                </svg>
+                            </button>
+                            <code id="outputData" class="text-sm text-slate-800 dark:text-slate-100 font-mono whitespace-pre"></code>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Edit Modal -->
+    <div id="editModal" class="fixed inset-0 bg-slate-900/60 hidden flex items-center justify-center z-50 backdrop-blur-sm">
+        <div class="bg-white/90 dark:bg-slate-900/90 rounded-2xl px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl shadow-slate-900/20 transform transition-all sm:max-w-lg sm:w-full sm:p-6 border border-slate-200/70 dark:border-slate-800/70">
+            <div>
+                <h3 class="text-lg leading-6 font-semibold text-slate-900 dark:text-slate-100" id="modal-title">Editar Cliente</h3>
+                <div class="mt-2">
+                    <input type="hidden" id="editClientId">
+                    <div class="mb-4">
+                        <label for="editClientName" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nombre Cliente</label>
+                        <input type="text" id="editClientName" maxlength="80" pattern="[A-Za-z0-9 _-]{1,80}" class="mt-1 block w-full border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-brand-500/30 focus:border-brand-500 sm:text-sm">
+                    </div>
+                    <div class="mb-4">
+                        <label for="editClientPassword" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nueva Contraseña (Opcional)</label>
+                        <div class="flex">
+                            <input type="text" id="editClientPassword" class="mt-1 block w-full border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-brand-500/30 focus:border-brand-500 sm:text-sm" placeholder="Dejar en blanco para mantener actual">
+                            <button type="button" onclick="document.getElementById('editClientPassword').value = generatePassword()" class="ml-2 mt-1 inline-flex items-center px-3 py-2 border border-slate-300 dark:border-slate-700 shadow-sm text-sm leading-4 font-medium rounded-md text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-950 hover:bg-slate-50 dark:hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500/60">
+                                Generar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-5 sm:mt-6 sm:grid sm:grid-cols-2 sm:gap-3 sm:grid-flow-row-dense">
+                <button type="button" id="saveClientButton" onclick="saveClientChanges()" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-brand-600 text-base font-semibold text-white hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500/60 sm:col-start-2 sm:text-sm">
+                    Guardar
+                </button>
+                <button type="button" onclick="closeEditModal()" class="mt-3 w-full inline-flex justify-center rounded-md border border-slate-300 dark:border-slate-700 shadow-sm px-4 py-2 bg-white dark:bg-slate-950 text-base font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500/60 sm:mt-0 sm:col-start-1 sm:text-sm">
+                    Cancelar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="fixed bottom-5 right-5 bg-slate-900/90 dark:bg-slate-800/90 text-white px-4 py-2 rounded-xl shadow-lg shadow-slate-900/20 transform translate-y-20 transition-transform duration-300">
+        Mensaje copiado
+    </div>
+
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <script>
+        const themeToggle = document.getElementById('themeToggle');
+        const themeIconSun = document.getElementById('themeIconSun');
+        const themeIconMoon = document.getElementById('themeIconMoon');
+
+        function applyTheme(theme) {
+            if (theme === 'dark') {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+            localStorage.setItem('theme', theme);
+            if (themeToggle) {
+                themeToggle.setAttribute('aria-pressed', theme === 'dark');
+            }
+            if (themeIconSun && themeIconMoon) {
+                themeIconSun.classList.toggle('hidden', theme !== 'dark');
+                themeIconMoon.classList.toggle('hidden', theme === 'dark');
+            }
+        }
+
+        const storedTheme = localStorage.getItem('theme');
+        if (storedTheme) {
+            applyTheme(storedTheme);
+        } else {
+            applyTheme(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        }
+
+        if (themeToggle) {
+            themeToggle.addEventListener('click', () => {
+                const isDark = document.documentElement.classList.contains('dark');
+                applyTheme(isDark ? 'light' : 'dark');
+            });
+        }
+
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+            if (!localStorage.getItem('theme')) {
+                applyTheme(e.matches ? 'dark' : 'light');
+            }
+        });
+
+        // --- Clock ---
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('clock').innerText = now.toLocaleTimeString();
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        let publicDbHost = 'localhost';
+        let publicDbPort = 5432;
+        let sqlAccessDatabases = [];
+
+        function getCookie(name) {
+            const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+            return match ? decodeURIComponent(match[2]) : '';
+        }
+
+        function getCsrfToken() {
+            return getCookie('csrf_token');
+        }
+
+        async function csrfFetch(url, options = {}) {
+            const opts = { ...options };
+            opts.headers = { ...(options.headers || {}) };
+            const method = (opts.method || 'GET').toUpperCase();
+            if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+                opts.headers['X-CSRF-Token'] = getCsrfToken();
+            }
+            return fetch(url, opts);
+        }
+
+        async function fetchConfig() {
+            try {
+                const res = await fetch('/api/config');
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                if (res.ok) {
+                    const data = await res.json();
+                    publicDbHost = data.public_db_host || publicDbHost;
+                    publicDbPort = data.public_db_port || publicDbPort;
+                }
+            } catch (e) {
+                console.error("Failed to fetch config", e);
+            }
+        }
+
+        // --- KPI Charts Configuration ---
+        const CHART_HISTORY = 60; 
+        const UPDATE_INTERVAL = 2000; 
+
+        const commonOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: { intersect: false, mode: 'index' },
+            plugins: { legend: { display: false }, tooltip: { enabled: true } },
+            scales: {
+                x: { display: false },
+                y: { beginAtZero: true, max: 100, grid: { display: false } }
+            },
+            elements: { point: { radius: 0 }, line: { tension: 0.4 } }
+        };
+
+        let cpuChart, memChart;
+        let lastConnectionData = {};
+
+        function initCharts() {
+            const cpuCanvas = document.getElementById('cpuChart');
+            const memCanvas = document.getElementById('memoryChart');
+
+            if (cpuCanvas && typeof Chart !== 'undefined') {
+                cpuChart = new Chart(cpuCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: Array(CHART_HISTORY).fill(''),
+                        datasets: [{
+                            label: 'CPU %',
+                            data: Array(CHART_HISTORY).fill(0),
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            fill: true,
+                            borderWidth: 2
+                        }]
+                    },
+                    options: commonOptions
+                });
+            }
+
+            if (memCanvas && typeof Chart !== 'undefined') {
+                memChart = new Chart(memCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: Array(CHART_HISTORY).fill(''),
+                        datasets: [{
+                            label: 'Memory %',
+                            data: Array(CHART_HISTORY).fill(0),
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                            fill: true,
+                            borderWidth: 2
+                        }]
+                    },
+                    options: commonOptions
+                });
+            }
+        }
+
+        function updateConnectionDisplay() {
+            const select = document.getElementById('dbConnectionSelect');
+            const display = document.getElementById('connectionCountDisplay');
+            const selectedDb = select.value;
+
+            if (selectedDb === 'all') {
+                const total = Object.values(lastConnectionData).reduce((a, b) => a + b, 0);
+                display.innerText = total;
+            } else {
+                display.innerText = lastConnectionData[selectedDb] || 0;
+            }
+        }
+
+        async function fetchMetrics() {
+            try {
+                const res = await fetch('/api/stats');
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                if (!res.ok) return;
+                const data = await res.json();
+                
+                if (cpuChart) {
+                    const cpuData = cpuChart.data.datasets[0].data;
+                    cpuData.push(data.cpu);
+                    cpuData.shift();
+                    cpuChart.update();
+                }
+
+                if (memChart) {
+                    const memData = memChart.data.datasets[0].data;
+                    memData.push(data.memory.percent);
+                    memData.shift();
+                    memChart.update();
+                }
+
+                // Update Connections
+                if (data.connections) {
+                    lastConnectionData = data.connections;
+                    const select = document.getElementById('dbConnectionSelect');
+                    const currentSelection = select.value;
+                    
+                    const dbNames = Object.keys(data.connections).sort();
+                    
+                    dbNames.forEach(db => {
+                        if (!select.querySelector(`option[value="${db}"]`)) {
+                            const option = document.createElement('option');
+                            option.value = db;
+                            option.text = db;
+                            select.appendChild(option);
+                        }
+                    });
+
+                    updateConnectionDisplay();
+                }
+
+            } catch (err) {
+                console.error("Error fetching metrics:", err);
+            }
+        }
+
+        // --- Clients Management ---
+        async function fetchClients() {
+            const tbody = document.getElementById('clientsTableBody');
+            try {
+                const res = await fetch('/clients');
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                const clients = await res.json();
+                
+                tbody.innerHTML = '';
+                if (clients.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-sm text-slate-500 dark:text-slate-400">No hay clientes creados</td></tr>';
+                    sqlAccessDatabases = [];
+                    renderSqlAccessDbOptions();
+                    return;
+                }
+
+                clients.forEach(client => {
+                    const clientName = String(client.client_name ?? '');
+                    const dbName = String(client.db_name ?? '');
+                    const dbUser = String(client.db_user ?? '');
+                    const isPaused = Boolean(client.paused);
+
+                    const tr = document.createElement('tr');
+
+                    const actionsTd = document.createElement('td');
+                    actionsTd.className = "px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400";
+                    const actionsDiv = document.createElement('div');
+                    actionsDiv.className = "flex items-center space-x-3";
+
+                    const copyBtn = document.createElement('button');
+                    copyBtn.className = "text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white";
+                    copyBtn.title = "Copiar Datos";
+                    copyBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 7.5V6.108c0-1.135.845-2.098 1.976-2.192.373-.03.748-.057 1.123-.08M15.75 18H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192-.373-.03-.748-.057-1.123-.08M15.75 5.25v13.5m-7.5-13.5v13.5m0-13.5h7.5m-7.5 13.5h7.5M5.25 21h13.5" /></svg>';
+                    copyBtn.addEventListener('click', () => copyRowCredentials(clientName, dbName, dbUser));
+
+                    const shareBtn = document.createElement('button');
+                    shareBtn.className = "text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white";
+                    shareBtn.title = "Compartir";
+                    shareBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" /></svg>';
+                    shareBtn.addEventListener('click', () => shareRowCredentials(clientName, dbName, dbUser));
+
+                    actionsDiv.appendChild(copyBtn);
+                    actionsDiv.appendChild(shareBtn);
+                    actionsTd.appendChild(actionsDiv);
+
+                    const nameTd = document.createElement('td');
+                    nameTd.className = "px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900 dark:text-slate-100";
+                    nameTd.textContent = clientName;
+
+                    const dbTd = document.createElement('td');
+                    dbTd.className = "px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400";
+                    const dbNameSpan = document.createElement('div');
+                    dbNameSpan.textContent = dbName;
+                    const statusSpan = document.createElement('span');
+                    statusSpan.className = `inline-flex items-center mt-2 px-2 py-0.5 rounded-full text-xs font-medium ${isPaused ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-200' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-200'}`;
+                    statusSpan.textContent = isPaused ? 'Pausada' : 'Activa';
+                    dbTd.appendChild(dbNameSpan);
+                    dbTd.appendChild(statusSpan);
+
+                    const userTd = document.createElement('td');
+                    userTd.className = "px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400 font-mono";
+                    const userDiv = document.createElement('div');
+                    userDiv.className = "flex items-center space-x-2";
+                    const userSpan = document.createElement('span');
+                    userSpan.className = "bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-xs text-slate-700 dark:text-slate-100";
+                    userSpan.textContent = `User: ${dbUser}`;
+                    const pwdSpan = document.createElement('span');
+                    pwdSpan.className = "bg-slate-50 dark:bg-slate-900 px-2 py-1 rounded text-xs text-slate-500 dark:text-slate-400";
+                    pwdSpan.textContent = "Contraseña: solo en creación";
+                    userDiv.appendChild(userSpan);
+                    userDiv.appendChild(pwdSpan);
+                    userTd.appendChild(userDiv);
+
+                    const actionTd = document.createElement('td');
+                    actionTd.className = "px-6 py-4 whitespace-nowrap text-right text-sm font-medium";
+                    const actionDiv = document.createElement('div');
+                    actionDiv.className = "flex justify-end space-x-2";
+
+                    const pauseBtn = document.createElement('button');
+                    pauseBtn.className = `${isPaused ? 'text-emerald-600 hover:text-emerald-700 dark:text-emerald-300 dark:hover:text-emerald-200' : 'text-amber-600 hover:text-amber-700 dark:text-amber-300 dark:hover:text-amber-200'} flex items-center gap-2`;
+                    pauseBtn.innerHTML = isPaused
+                        ? '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.25v13.5m4.5-13.5v13.5m4.5-13.5v13.5" /></svg>Reanudar'
+                        : '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" /></svg>Pausar';
+                    pauseBtn.addEventListener('click', () => toggleClientPause(client.id, isPaused, pauseBtn));
+
+                    const editBtn = document.createElement('button');
+                    editBtn.className = "text-brand-600 hover:text-brand-700 dark:text-brand-100 dark:hover:text-white flex items-center gap-2";
+                    editBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>Editar';
+                    editBtn.addEventListener('click', () => openEditModal(client.id, clientName));
+
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = "text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 flex items-center gap-2";
+                    deleteBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>Borrar';
+                    deleteBtn.addEventListener('click', () => deleteClient(client.id));
+
+                    actionDiv.appendChild(pauseBtn);
+                    actionDiv.appendChild(editBtn);
+                    actionDiv.appendChild(deleteBtn);
+                    actionTd.appendChild(actionDiv);
+
+                    tr.appendChild(actionsTd);
+                    tr.appendChild(nameTd);
+                    tr.appendChild(dbTd);
+                    tr.appendChild(userTd);
+                    tr.appendChild(actionTd);
+
+                    tbody.appendChild(tr);
+                });
+                sqlAccessDatabases = clients.map(client => String(client.db_name ?? '')).filter(Boolean);
+                renderSqlAccessDbOptions();
+            } catch (e) {
+                console.error("Failed to fetch clients", e);
+            }
+        }
+
+        function setActionButtonLoading(button, isLoading, label) {
+            if (isLoading) {
+                if (!button.dataset.original) {
+                    button.dataset.original = button.innerHTML;
+                }
+                button.disabled = true;
+                button.classList.add('opacity-60', 'cursor-not-allowed');
+                button.innerHTML = `<span class="flex items-center gap-2"><svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg><span>${label}</span></span>`;
+                return;
+            }
+            if (button.dataset.original) {
+                button.innerHTML = button.dataset.original;
+            }
+            button.disabled = false;
+            button.classList.remove('opacity-60', 'cursor-not-allowed');
+        }
+
+        async function toggleClientPause(id, isPaused, button) {
+            setActionButtonLoading(button, true, isPaused ? 'Reanudando...' : 'Pausando...');
+            try {
+                const res = await csrfFetch(`/clients/${id}/${isPaused ? 'resume' : 'pause'}`, { method: 'POST' });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+
+                if (res.ok) {
+                    showToast(isPaused ? 'Base de datos reanudada' : 'Base de datos pausada');
+                    fetchClients();
+                } else {
+                    const data = await res.json();
+                    alert('Error: ' + data.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            } finally {
+                setActionButtonLoading(button, false);
+            }
+        }
+
+        async function deleteClient(id) {
+            if (!confirm('¿Estás seguro de que quieres eliminar este cliente y su base de datos? Esta acción no se puede deshacer.')) return;
+            
+            try {
+                const res = await csrfFetch(`/clients/${id}`, { method: 'DELETE' });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                
+                if (res.ok) {
+                    showToast('Cliente eliminado correctamente');
+                    fetchClients();
+                } else {
+                    const data = await res.json();
+                    alert('Error: ' + data.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            }
+        }
+
+        function copyToClipboard(text, msg = 'Copiado al portapapeles') {
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(() => {
+                    showToast(msg);
+                });
+            } else {
+                // Fallback for insecure context (HTTP)
+                const textArea = document.createElement("textarea");
+                textArea.value = text;
+                textArea.style.position = "fixed";
+                textArea.style.left = "-9999px";
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                    showToast(msg);
+                } catch (err) {
+                    console.error('Fallback: Oops, unable to copy', err);
+                    alert('No se pudo copiar automáticamente. Por favor copia manualmente.');
+                }
+                document.body.removeChild(textArea);
+            }
+        }
+
+        function generatePassword(length = 16) {
+            const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
+            let retVal = "";
+            for (let i = 0, n = charset.length; i < length; ++i) {
+                retVal += charset.charAt(Math.floor(Math.random() * n));
+            }
+            return retVal;
+        }
+
+        function openEditModal(id, name) {
+            document.getElementById('editClientId').value = id;
+            document.getElementById('editClientName').value = name;
+            document.getElementById('editClientPassword').value = '';
+            document.getElementById('editModal').classList.remove('hidden');
+        }
+
+        function closeEditModal() {
+            document.getElementById('editModal').classList.add('hidden');
+        }
+
+        async function saveClientChanges() {
+            const id = document.getElementById('editClientId').value;
+            const name = document.getElementById('editClientName').value;
+            const password = document.getElementById('editClientPassword').value;
+            const saveButton = document.getElementById('saveClientButton');
+
+            if (!name) return alert('El nombre es requerido');
+
+            const data = { client_name: name };
+            if (password) data.new_password = password;
+
+            try {
+                if (saveButton) {
+                    setActionButtonLoading(saveButton, true, 'Guardando...');
+                }
+                const res = await csrfFetch(`/clients/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                
+                if (res.status === 401) { window.location.href = '/login'; return; }
+
+                if (res.ok) {
+                    showToast('Cliente actualizado correctamente');
+                    closeEditModal();
+                    fetchClients();
+                } else {
+                    const err = await res.json();
+                    alert('Error: ' + err.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            } finally {
+                if (saveButton) {
+                    setActionButtonLoading(saveButton, false);
+                }
+            }
+        }
+
+        function copyResultCode() {
+            const code = document.getElementById('outputData').innerText;
+            copyToClipboard(code);
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            toast.innerText = msg;
+            toast.classList.remove('translate-y-20');
+            setTimeout(() => {
+                toast.classList.add('translate-y-20');
+            }, 3000);
+        }
+
+        // --- Port Management ---
+        async function fetchPorts() {
+            const list = document.getElementById('portsList');
+            
+            try {
+                const res = await fetch('/api/ports');
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                const data = await res.json();
+                
+                list.innerHTML = '';
+                
+                if (data.status === 'error') {
+                    list.innerHTML = `<li class="py-2 text-red-500 text-center text-xs">${data.message}</li>`;
+                    return;
+                }
+                
+                const ports = data.ports;
+                
+                if (ports.length === 0) {
+                    list.innerHTML = '<li class="py-2 text-slate-500 text-center text-xs">No hay puertos abiertos</li>';
+                } else {
+                    ports.forEach(p => {
+                        const li = document.createElement('li');
+                        li.className = "py-2 flex justify-between items-center text-slate-700 dark:text-slate-200";
+
+                        const portSpan = document.createElement('span');
+                        portSpan.className = "font-mono";
+                        portSpan.textContent = `${p.port}/${p.protocol}`;
+                        li.appendChild(portSpan);
+
+                        if (p.port === 5432 && p.protocol === 'TCP') {
+                            const statusSpan = document.createElement('span');
+                            statusSpan.className = "text-xs text-slate-400 dark:text-slate-500";
+                            statusSpan.textContent = "Principal";
+                            li.appendChild(statusSpan);
+                        } else if (Number(p.port) === 443 && String(p.protocol).toUpperCase() === 'TCP') {
+                            const lockedButton = document.createElement('button');
+                            lockedButton.type = "button";
+                            lockedButton.className = "text-xs text-slate-400 dark:text-slate-500 border border-slate-200 dark:border-slate-800 rounded px-2 py-1 bg-slate-50 dark:bg-slate-900/60 cursor-not-allowed";
+                            lockedButton.textContent = "Bloqueado";
+                            lockedButton.disabled = true;
+                            lockedButton.title = "Puerto 443 protegido";
+                            li.appendChild(lockedButton);
+                        } else {
+                            const closeButton = document.createElement('button');
+                            closeButton.type = "button";
+                            closeButton.className = "text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 border border-red-200 dark:border-red-900/60 rounded px-2 py-1 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors";
+                            closeButton.textContent = "Cerrar";
+                            closeButton.addEventListener('click', () => closePort(p.port, p.protocol, closeButton));
+                            li.appendChild(closeButton);
+                        }
+
+                        list.appendChild(li);
+                    });
+                }
+            } catch (e) {
+                console.error("Failed to fetch ports", e);
+                list.innerHTML = '<li class="py-2 text-red-500 text-center text-xs">Error de conexión</li>';
+            }
+        }
+
+        function renderSqlAccessDbOptions() {
+            const container = document.getElementById('sqlAccessDbList');
+            if (!container) return;
+            container.innerHTML = '';
+            if (!sqlAccessDatabases.length) {
+                container.innerHTML = '<span class="col-span-2 text-slate-500 dark:text-slate-400 text-center">Sin bases disponibles</span>';
+                return;
+            }
+            sqlAccessDatabases.forEach(db => {
+                const label = document.createElement('label');
+                label.className = "flex items-center gap-2 px-2 py-1 rounded-lg bg-white/70 dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-800/70";
+                const checkbox = document.createElement('input');
+                checkbox.type = "checkbox";
+                checkbox.value = db;
+                checkbox.className = "h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/40";
+                const span = document.createElement('span');
+                span.className = "font-mono text-[11px]";
+                span.textContent = db;
+                label.appendChild(checkbox);
+                label.appendChild(span);
+                container.appendChild(label);
+            });
+        }
+
+        function getSelectedSqlDatabases() {
+            const container = document.getElementById('sqlAccessDbList');
+            if (!container) return [];
+            const selected = [];
+            container.querySelectorAll('input[type="checkbox"]').forEach(input => {
+                if (input.checked) {
+                    selected.push(input.value);
+                }
+            });
+            return selected;
+        }
+
+        function updateSqlStatus(entries) {
+            const sqlStatusText = document.getElementById('sqlStatusText');
+            const sqlStatusIndicator = document.getElementById('sqlStatusIndicator');
+            const hasPublic = entries.some(e => e.ip === '0.0.0.0/0');
+            if (hasPublic) {
+                sqlStatusText.innerText = 'Abierto al público';
+                sqlStatusText.className = 'text-xs text-red-600 dark:text-red-400 font-medium';
+                sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]';
+                return;
+            }
+            if (entries.length > 0) {
+                sqlStatusText.innerText = 'Restringido por IP';
+                sqlStatusText.className = 'text-xs text-emerald-600 dark:text-emerald-300 font-medium';
+                sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]';
+                return;
+            }
+            sqlStatusText.innerText = 'Cerrado';
+            sqlStatusText.className = 'text-xs text-slate-500 dark:text-slate-400';
+            sqlStatusIndicator.className = 'h-3 w-3 rounded-full bg-slate-300 dark:bg-slate-700';
+        }
+
+        async function fetchSqlAccess() {
+            const list = document.getElementById('sqlAccessList');
+            list.innerHTML = '<li class="py-2 text-slate-500 text-center text-xs">Cargando...</li>';
+            try {
+                const res = await fetch('/api/sql-access');
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                const data = await res.json();
+                list.innerHTML = '';
+                if (data.status === 'error') {
+                    list.innerHTML = `<li class="py-2 text-red-500 text-center text-xs">${data.message}</li>`;
+                    updateSqlStatus([]);
+                    return;
+                }
+                const entries = data.entries || [];
+                updateSqlStatus(entries);
+                if (entries.length === 0) {
+                    list.innerHTML = '<li class="py-2 text-slate-500 text-center text-xs">No hay IPs permitidas</li>';
+                    return;
+                }
+                entries.forEach(entry => {
+                    const ip = entry.ip;
+                    const databases = Array.isArray(entry.databases) ? entry.databases : [];
+                    const li = document.createElement('li');
+                    li.className = "py-2 flex flex-col gap-2 text-slate-700 dark:text-slate-200";
+
+                    const header = document.createElement('div');
+                    header.className = "flex justify-between items-center";
+
+                    const isPublic = ip === '0.0.0.0/0';
+                    const ipSpan = document.createElement('span');
+                    ipSpan.className = isPublic ? "font-mono text-xs text-red-600 dark:text-red-400 font-semibold" : "font-mono text-xs";
+                    ipSpan.textContent = isPublic ? '0.0.0.0/0 (Público)' : ip;
+                    header.appendChild(ipSpan);
+
+                    const removeButton = document.createElement('button');
+                    removeButton.type = "button";
+                    removeButton.className = "text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 border border-red-200 dark:border-red-900/60 rounded px-2 py-1 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors";
+                    removeButton.textContent = "Revocar";
+                    removeButton.addEventListener('click', () => revokeSqlAccess(ip, removeButton));
+                    header.appendChild(removeButton);
+
+                    const dbRow = document.createElement('div');
+                    dbRow.className = "flex flex-wrap gap-2";
+                    if (databases.length === 0) {
+                        const emptyTag = document.createElement('span');
+                        emptyTag.className = "text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-300";
+                        emptyTag.textContent = "Sin bases";
+                        dbRow.appendChild(emptyTag);
+                    } else {
+                        databases.forEach(db => {
+                            const tag = document.createElement('span');
+                            tag.className = "text-[11px] px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-100 font-mono";
+                            tag.textContent = db;
+                            dbRow.appendChild(tag);
+                        });
+                    }
+
+                    li.appendChild(header);
+                    li.appendChild(dbRow);
+                    list.appendChild(li);
+                });
+            } catch (e) {
+                list.innerHTML = '<li class="py-2 text-red-500 text-center text-xs">Error de conexión</li>';
+                updateSqlStatus([]);
+            }
+        }
+
+        async function allowSqlAccess(ip) {
+            const btn = document.getElementById('allowSqlAccessButton');
+            if (btn) {
+                setActionButtonLoading(btn, true, 'Permitiendo...');
+            }
+            try {
+                const databases = getSelectedSqlDatabases();
+                if (!databases.length) {
+                    alert('Selecciona al menos una base de datos');
+                    return;
+                }
+                const res = await csrfFetch('/api/sql-access/allow', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip, databases })
+                });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                const data = await res.json();
+                if (res.ok) {
+                    showToast('IP permitida');
+                    document.getElementById('addSqlAccessForm').reset();
+                    renderSqlAccessDbOptions();
+                    fetchSqlAccess();
+                } else {
+                    alert('Error: ' + data.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            } finally {
+                if (btn) {
+                    setActionButtonLoading(btn, false);
+                }
+            }
+        }
+
+        async function revokeSqlAccess(ip, button) {
+            if (!confirm(`¿Revocar acceso para ${ip}?`)) return;
+            try {
+                if (button) {
+                    setActionButtonLoading(button, true, 'Revocando...');
+                }
+                const res = await csrfFetch('/api/sql-access/revoke', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip })
+                });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                if (res.ok) {
+                    showToast('IP revocada');
+                    fetchSqlAccess();
+                } else {
+                    const data = await res.json();
+                    alert('Error: ' + data.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            } finally {
+                if (button) {
+                    setActionButtonLoading(button, false);
+                }
+            }
+        }
+
+        async function openPort(port, protocol = 'tcp') {
+            const btn = document.getElementById('openPortButton');
+            if (btn) {
+                setActionButtonLoading(btn, true, 'Abriendo...');
+            }
+            
+            try {
+                const res = await csrfFetch('/api/ports/open', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ port: parseInt(port), protocol: protocol })
+                });
+                
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                const data = await res.json();
+                
+                if (res.ok) {
+                    showToast(`Puerto ${port} abierto`);
+                    document.getElementById('addPortForm').reset();
+                    fetchPorts();
+                } else {
+                    alert('Error: ' + data.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            } finally {
+                if (btn) {
+                    setActionButtonLoading(btn, false);
+                }
+            }
+        }
+
+        async function closePort(port, protocol, button) {
+            if (!confirm(`¿Cerrar el puerto ${port}/${protocol}?`)) return;
+            
+            try {
+                if (button) {
+                    setActionButtonLoading(button, true, 'Cerrando...');
+                }
+                const res = await csrfFetch('/api/ports/close', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ port: parseInt(port), protocol: protocol })
+                });
+                
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                
+                if (res.ok) {
+                    showToast(`Puerto ${port} cerrado`);
+                    fetchPorts();
+                } else {
+                    const data = await res.json();
+                    alert('Error: ' + data.detail);
+                }
+            } catch (e) {
+                alert('Error de conexión');
+            } finally {
+                if (button) {
+                    setActionButtonLoading(button, false);
+                }
+            }
+        }
+        
+        document.getElementById('addPortForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const port = document.getElementById('newPort').value;
+            if (port) openPort(port);
+        });
+
+        document.getElementById('addSqlAccessForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const ip = document.getElementById('sqlAccessIp').value.trim();
+            if (ip) allowSqlAccess(ip);
+        });
+
+        function copyRowCredentials(clientName, dbName, dbUser) {
+            const text = `Cliente: ${clientName}\nBase de Datos: ${dbName}\nUsuario: ${dbUser}\nHost: ${publicDbHost}\nPuerto: ${publicDbPort}\n\nConnection String: postgresql://${dbUser}:[PASSWORD]@${publicDbHost}:${publicDbPort}/${dbName}`;
+            copyToClipboard(text, 'Credenciales completas copiadas');
+        }
+
+        async function shareRowCredentials(clientName, dbName, dbUser) {
+            const text = `Cliente: ${clientName}\nBase de Datos: ${dbName}\nUsuario: ${dbUser}\nHost: ${publicDbHost}\nPuerto: ${publicDbPort}\n\nConnection String: postgresql://${dbUser}:[PASSWORD]@${publicDbHost}:${publicDbPort}/${dbName}`;
+            
+            if (navigator.share) {
+                try {
+                    await navigator.share({
+                        title: `Credenciales: ${clientName}`,
+                        text: text
+                    });
+                    showToast('Compartido exitosamente');
+                } catch (err) {
+                    console.error('Error al compartir:', err);
+                }
+            } else {
+                copyToClipboard(text, 'Copiado para compartir (Tu navegador no soporta compartir nativo)');
+            }
+        }
+
+
+        // --- Init ---
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchConfig();
+            initCharts();
+            setInterval(fetchMetrics, UPDATE_INTERVAL);
+            fetchMetrics();
+            fetchClients(); // Load initial list
+            fetchPorts(); // Load ports
+            fetchSqlAccess();
+            const refreshPortsButton = document.getElementById('refreshPortsButton');
+            if (refreshPortsButton) {
+                refreshPortsButton.addEventListener('click', fetchPorts);
+            }
+            const refreshSqlAccessButton = document.getElementById('refreshSqlAccessButton');
+            if (refreshSqlAccessButton) {
+                refreshSqlAccessButton.addEventListener('click', fetchSqlAccess);
+            }
+        });
+
+        // --- Logout handler ---
+        document.getElementById('logoutBtn').addEventListener('click', async () => {
+            try { await csrfFetch('/logout', { method: 'POST' }); window.location.href = '/login'; } 
+            catch (err) { window.location.href = '/login'; }
+        });
+
+        // --- Create Form handler ---
+        document.getElementById('createForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('createClientButton');
+            const resultDiv = document.getElementById('result');
+            const outputCode = document.getElementById('outputData');
+            const resultHeader = document.getElementById('resultHeader');
+            
+            if (btn) {
+                setActionButtonLoading(btn, true, 'Generando...');
+            }
+            
+            resultDiv.classList.add('hidden');
+
+            const data = {
+                client_name: document.getElementById('clientName').value,
+                db_name: document.getElementById('dbName').value
+            };
+
+            try {
+                const response = await csrfFetch('/create-client', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                
+                if (response.status === 401) { window.location.href = '/login'; return; }
+
+                const result = await response.json();
+                
+                if (!response.ok) throw new Error(result.detail || "Error desconocido");
+
+                resultDiv.classList.remove('hidden');
+                resultHeader.innerHTML = '<svg class="h-6 w-6 text-green-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg><h3 class="text-lg font-medium text-green-800">¡Base de Datos Creada!</h3>';
+                outputCode.innerText = JSON.stringify(result.connection_info, null, 2);
+                
+                e.target.reset();
+                fetchClients(); // Refresh list
+            } catch (err) {
+                resultDiv.classList.remove('hidden');
+                resultHeader.innerHTML = '<svg class="h-6 w-6 text-red-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg><h3 class="text-lg font-medium text-red-800">Error</h3>';
+                outputCode.innerText = err.message;
+            } finally {
+                if (btn) {
+                    setActionButtonLoading(btn, false);
+                }
+            }
+        });
+    </script>
+</body>
+</html>
