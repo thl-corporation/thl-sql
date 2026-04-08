@@ -409,6 +409,95 @@ ensure_debian_postgres_cluster() {
     done < <(pg_lsclusters --no-header 2>/dev/null || true)
 }
 
+cleanup_stale_postmaster_pid() {
+    local data_dir="$1"
+    local pid_file="${data_dir}/postmaster.pid"
+    local stale_pid=""
+
+    [ -n "${data_dir}" ] || return
+    [ -f "${pid_file}" ] || return
+
+    stale_pid="$(sed -n '1p' "${pid_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [ -n "${stale_pid}" ] && kill -0 "${stale_pid}" >/dev/null 2>&1; then
+        return
+    fi
+
+    warn "Detectado postmaster.pid huerfano en ${data_dir}. Limpiando..."
+    rm -f "${pid_file}" >/dev/null 2>&1 || true
+}
+
+debian_recover_postgres_cluster() {
+    if [ "${OS_FAMILY}" != "debian" ] || ! command -v pg_lsclusters >/dev/null 2>&1; then
+        return 1
+    fi
+
+    local attempt
+    local healed_port=""
+    local ver name port status owner data logf
+
+    for attempt in $(seq 1 3); do
+        warn "Recuperacion PostgreSQL Debian (${attempt}/3)..."
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl restart postgresql >/dev/null 2>&1 || true
+
+        while read -r ver name port status owner data logf; do
+            [ -n "${ver}" ] || continue
+            [ -n "${name}" ] || continue
+            [ -n "${data}" ] || continue
+
+            cleanup_stale_postmaster_pid "${data}"
+
+            if [ "${status}" != "online" ]; then
+                pg_ctlcluster --skip-systemctl-redirect "${ver}" "${name}" start >/dev/null 2>&1 || \
+                    pg_ctlcluster "${ver}" "${name}" start >/dev/null 2>&1 || true
+            fi
+        done < <(pg_lsclusters --no-header 2>/dev/null || true)
+
+        sleep 2
+        healed_port="$(detect_active_postgres_port || true)"
+        if [ -n "${healed_port}" ] && wait_for_postgres_access "${healed_port}" 30; then
+            echo "${healed_port}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+resolve_postgres_port_with_recovery() {
+    local attempt
+    local detected_port=""
+
+    for attempt in $(seq 1 4); do
+        detected_port="$(detect_active_postgres_port || true)"
+        if [ -n "${detected_port}" ] && wait_for_postgres_access "${detected_port}" 90; then
+            echo "${detected_port}"
+            return 0
+        fi
+
+        if [ "${OS_FAMILY}" = "debian" ]; then
+            detected_port="$(debian_recover_postgres_cluster || true)"
+            if [ -n "${detected_port}" ] && wait_for_postgres_access "${detected_port}" 45; then
+                echo "${detected_port}"
+                return 0
+            fi
+        else
+            systemctl restart postgresql >/dev/null 2>&1 || true
+            sleep 2
+        fi
+    done
+
+    if [ "${OS_FAMILY}" = "debian" ] && command -v pg_lsclusters >/dev/null 2>&1; then
+        detected_port="$(pg_lsclusters --no-header 2>/dev/null | awk '$4=="online" && $3 ~ /^[0-9]+$/ {print $3; exit}')"
+        if [ -n "${detected_port}" ] && wait_for_postgres_access "${detected_port}" 45; then
+            echo "${detected_port}"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 disable_service_if_exists() {
     local svc="$1"
     if systemctl list-unit-files | grep -q "^${svc}\.service"; then
@@ -1113,22 +1202,7 @@ configure_postgres_service() {
     systemctl enable --now postgresql >/dev/null 2>&1 || systemctl restart postgresql
     ensure_debian_postgres_cluster
 
-    pg_port="$(detect_active_postgres_port || true)"
-    if [ -n "${pg_port}" ] && ! wait_for_postgres_access "${pg_port}" 90; then
-        pg_port=""
-    fi
-    if [ -z "${pg_port}" ]; then
-        sleep 3
-        pg_port="$(detect_active_postgres_port || true)"
-    fi
-    if [ -n "${pg_port}" ] && ! wait_for_postgres_access "${pg_port}" 90; then
-        pg_port=""
-    fi
-    if [ -z "${pg_port}" ]; then
-        if [ "${OS_FAMILY}" = "debian" ] && command -v pg_lsclusters >/dev/null 2>&1; then
-            pg_port="$(pg_lsclusters --no-header 2>/dev/null | awk '$4=="online" && $3 ~ /^[0-9]+$/ {print $3; exit}')"
-        fi
-    fi
+    pg_port="$(resolve_postgres_port_with_recovery || true)"
     if [ -z "${pg_port}" ]; then
         if [ "${OS_FAMILY}" = "debian" ] && command -v pg_lsclusters >/dev/null 2>&1; then
             pg_lsclusters || true
