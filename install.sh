@@ -571,7 +571,14 @@ configure_postgres_service() {
 
     cp "${SCRIPT_DIR}/server/configure_postgres_timeouts.sh" /usr/local/bin/configure_postgres_timeouts.sh
     chmod +x /usr/local/bin/configure_postgres_timeouts.sh
-    /usr/local/bin/configure_postgres_timeouts.sh
+    if ! /usr/local/bin/configure_postgres_timeouts.sh; then
+        warn "configure_postgres_timeouts.sh fallo. Reintentando una vez..."
+        sleep 3
+        /usr/local/bin/configure_postgres_timeouts.sh || {
+            journalctl -u postgresql --no-pager -n 80 || true
+            die "No se pudo completar la configuracion final de PostgreSQL."
+        }
+    fi
 }
 
 deploy_app() {
