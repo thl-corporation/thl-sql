@@ -217,7 +217,18 @@ run_as_postgres() {
 
 detect_active_postgres_port() {
     local candidate
-    for candidate in 5432 5433; do
+    local -a candidates=()
+
+    if [ "${OS_FAMILY}" = "debian" ] && command -v pg_lsclusters >/dev/null 2>&1; then
+        while read -r ver name port status owner data logf; do
+            if [ "${status}" = "online" ] && [ -n "${port}" ]; then
+                candidates+=("${port}")
+            fi
+        done < <(pg_lsclusters --no-header 2>/dev/null || true)
+    fi
+
+    candidates+=(5432 5433)
+    for candidate in "${candidates[@]}"; do
         if run_as_postgres "psql -p \"${candidate}\" -Atqc \"select 1\"" >/dev/null 2>&1; then
             echo "${candidate}"
             return 0
@@ -229,6 +240,25 @@ detect_active_postgres_port() {
         return 0
     fi
 
+    return 1
+}
+
+wait_for_postgres_access() {
+    local port="$1"
+    local retries="${2:-45}"
+    local i
+    for i in $(seq 1 "${retries}"); do
+        if command -v pg_isready >/dev/null 2>&1; then
+            if run_as_postgres "pg_isready -q -p \"${port}\"" >/dev/null 2>&1; then
+                return 0
+            fi
+        else
+            if run_as_postgres "psql -p \"${port}\" -Atqc \"select 1\"" >/dev/null 2>&1; then
+                return 0
+            fi
+        fi
+        sleep 1
+    done
     return 1
 }
 
@@ -937,7 +967,7 @@ configure_dns() {
 
 configure_postgres_service() {
     log "[3/11] Configurando PostgreSQL..."
-    local pg_port
+    local pg_port=""
 
     if [ "${OS_FAMILY}" = "rhel" ] && [ ! -f /var/lib/pgsql/data/PG_VERSION ]; then
         if command -v postgresql-setup >/dev/null 2>&1; then
@@ -950,7 +980,20 @@ configure_postgres_service() {
     ensure_debian_postgres_cluster
 
     pg_port="$(detect_active_postgres_port || true)"
+    if [ -n "${pg_port}" ] && ! wait_for_postgres_access "${pg_port}" 45; then
+        pg_port=""
+    fi
     if [ -z "${pg_port}" ]; then
+        sleep 3
+        pg_port="$(detect_active_postgres_port || true)"
+    fi
+    if [ -n "${pg_port}" ] && ! wait_for_postgres_access "${pg_port}" 45; then
+        pg_port=""
+    fi
+    if [ -z "${pg_port}" ]; then
+        if [ "${OS_FAMILY}" = "debian" ] && command -v pg_lsclusters >/dev/null 2>&1; then
+            pg_lsclusters || true
+        fi
         journalctl -u postgresql --no-pager -n 80 || true
         die "PostgreSQL no quedo accesible tras el arranque inicial."
     fi
