@@ -55,6 +55,7 @@ Variables:
 - `THL_PRESERVE_EXISTING=1` (opcional, default: conserva credenciales/configuracion en upgrades)
 - `THL_ACTION=reinstall|upgrade|uninstall` (opcional)
 - `THL_FORCE=1` (opcional, requerido para acciones destructivas sin prompt)
+- `THL_AUTO_CACHE_CLEAN=1` (opcional, default: limpia cache y temporales automaticamente)
 
 ## Modos de instalacion (3 opciones)
 
@@ -75,6 +76,8 @@ THL_ACTION=upgrade curl -fsSL https://raw.githubusercontent.com/thl-corporation/
 ```bash
 THL_ACTION=uninstall THL_FORCE=1 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
 ```
+
+Con `curl ... | bash` en una terminal, si no defines `THL_ACTION`, el instalador muestra automaticamente estas 3 opciones.
 
 ## UX recomendado con dominio
 

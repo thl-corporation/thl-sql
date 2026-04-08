@@ -19,6 +19,7 @@ THL_INSTALL_SUMMARY_FILE="${THL_INSTALL_SUMMARY_FILE:-/root/thl-sql-install-summ
 THL_PRESERVE_EXISTING="${THL_PRESERVE_EXISTING:-1}"
 THL_ACTION="${THL_ACTION:-}"
 THL_FORCE="${THL_FORCE:-0}"
+THL_AUTO_CACHE_CLEAN="${THL_AUTO_CACHE_CLEAN:-1}"
 FIREWALL_BACKEND=""
 OS_FAMILY=""
 PKG_TOOL=""
@@ -102,6 +103,13 @@ validate_install_settings() {
         0|1) ;;
         *)
             die "Valor invalido THL_FORCE=${THL_FORCE}. Usa 0 o 1."
+            ;;
+    esac
+
+    case "${THL_AUTO_CACHE_CLEAN}" in
+        0|1) ;;
+        *)
+            die "Valor invalido THL_AUTO_CACHE_CLEAN=${THL_AUTO_CACHE_CLEAN}. Usa 0 o 1."
             ;;
     esac
 
@@ -204,6 +212,29 @@ detect_existing_installation() {
     else
         warn "Instalacion existente detectada. THL_PRESERVE_EXISTING=0, se aplicara reconfiguracion completa."
     fi
+}
+
+auto_cleanup_cache() {
+    if [ "${THL_AUTO_CACHE_CLEAN}" != "1" ]; then
+        return
+    fi
+
+    log "Limpieza automatica de cache/temporales..."
+    rm -rf /tmp/thl-sql-bootstrap.* /tmp/thl-sql-existing-env.* 2>/dev/null || true
+
+    if [ "${PKG_TOOL}" = "apt" ]; then
+        apt-get clean >/dev/null 2>&1 || true
+        rm -rf /var/lib/apt/lists/* 2>/dev/null || true
+    elif [ "${PKG_TOOL}" = "dnf" ]; then
+        dnf clean all >/dev/null 2>&1 || true
+    else
+        yum clean all >/dev/null 2>&1 || true
+    fi
+
+    if command -v pip3 >/dev/null 2>&1; then
+        pip3 cache purge >/dev/null 2>&1 || true
+    fi
+    rm -rf /root/.cache/pip 2>/dev/null || true
 }
 
 run_as_postgres() {
@@ -402,7 +433,7 @@ select_install_action() {
         return
     fi
 
-    if [ "${THL_UX_MODE}" = "1" ] || [ "${THL_NONINTERACTIVE:-0}" = "1" ] || ! has_tty; then
+    if [ "${THL_NONINTERACTIVE:-0}" = "1" ] || ! has_tty; then
         if [ "${EXISTING_INSTALL}" = "1" ]; then
             INSTALL_ACTION="upgrade"
         else
@@ -718,6 +749,10 @@ sync_bootstrap_repo() {
     validate_safe_bootstrap_dir "${BOOTSTRAP_DIR}"
     mkdir -p "$(dirname "${BOOTSTRAP_DIR}")"
 
+    if [ "${THL_AUTO_CACHE_CLEAN}" = "1" ]; then
+        safe_reset_bootstrap_dir
+    fi
+
     if [ -d "${BOOTSTRAP_DIR}/.git" ]; then
         if run_with_retry 2 git -C "${BOOTSTRAP_DIR}" fetch --depth 1 origin main && \
             git -C "${BOOTSTRAP_DIR}" checkout -f main && \
@@ -775,6 +810,7 @@ ensure_repo_source() {
     export THL_PRESERVE_EXISTING
     export THL_ACTION
     export THL_FORCE
+    export THL_AUTO_CACHE_CLEAN
 
     exec bash "${BOOTSTRAP_DIR}/install.sh"
 }
@@ -1335,6 +1371,7 @@ main() {
     init_install_logging
     require_systemd
     detect_os
+    auto_cleanup_cache
     ensure_repo_source
     detect_existing_installation
     select_install_action

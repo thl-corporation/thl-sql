@@ -55,6 +55,7 @@ Supported families:
 - `THL_PRESERVE_EXISTING=1` (default, keeps existing credentials/config on upgrade)
 - `THL_ACTION=reinstall|upgrade|uninstall`
 - `THL_FORCE=1` (required for non-interactive destructive actions)
+- `THL_AUTO_CACHE_CLEAN=1` (default, clears package/temp caches automatically)
 
 ## Installation Modes (3 options)
 
@@ -75,6 +76,10 @@ THL_ACTION=upgrade curl -fsSL https://raw.githubusercontent.com/thl-corporation/
 ```bash
 THL_ACTION=uninstall THL_FORCE=1 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
 ```
+
+Interactive one-link behavior:
+
+- If you run `curl ... | bash` from a terminal and do not set `THL_ACTION`, installer shows the 3 options menu automatically.
 
 UX one-command with domain (recommended for production):
 
