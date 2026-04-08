@@ -26,6 +26,7 @@ PKG_TOOL=""
 NGINX_CONF_FILE="/etc/nginx/conf.d/pg_manager.conf"
 CRON_WATCHDOG_FILE="/etc/cron.d/thl_sql_watchdog"
 ADMIN_PASSWORD_GENERATED="0"
+ADMIN_PASSWORD_SOURCE="pending"
 UX_MODE_ACTIVE="0"
 EXISTING_INSTALL="0"
 EXISTING_ENV_FILE="${APP_DIR}/backend/.env"
@@ -943,6 +944,13 @@ collect_input() {
     fi
 
     ADMIN_PASSWORD="${THL_ADMIN_PASS:-${existing_admin_password:-}}"
+    if [ -n "${THL_ADMIN_PASS:-}" ]; then
+        ADMIN_PASSWORD_SOURCE="provided"
+    elif [ "${EXISTING_INSTALL}" = "1" ] && [ "${THL_PRESERVE_EXISTING}" = "1" ] && [ -n "${existing_admin_password}" ]; then
+        ADMIN_PASSWORD_SOURCE="preserved"
+    else
+        ADMIN_PASSWORD_SOURCE="prompted"
+    fi
     if [ -z "${ADMIN_PASSWORD}" ]; then
         if [ "${interactive_mode}" = "1" ]; then
             while true; do
@@ -961,6 +969,7 @@ collect_input() {
             ADMIN_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=')"
             warn "THL_ADMIN_PASS no definido en modo no interactivo. Se genero password admin aleatorio."
             ADMIN_PASSWORD_GENERATED="1"
+            ADMIN_PASSWORD_SOURCE="generated"
         fi
     fi
 
@@ -1304,6 +1313,65 @@ SVCEOF
 
     systemctl daemon-reload
     systemctl enable --now pg_manager
+    systemctl restart pg_manager
+}
+
+wait_for_http_endpoint() {
+    local url="$1"
+    local retries="${2:-45}"
+    local i
+    for i in $(seq 1 "${retries}"); do
+        if curl -fsS -o /dev/null "${url}"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+verify_admin_login() {
+    local env_file="${APP_DIR}/backend/.env"
+    local admin_user admin_pass payload http_code
+    local tmp_resp
+
+    [ -f "${env_file}" ] || die "No existe ${env_file} para verificar login admin."
+    admin_user="$(grep -m1 '^ADMIN_USERNAME=' "${env_file}" | cut -d'=' -f2- || true)"
+    admin_pass="$(grep -m1 '^ADMIN_PASSWORD=' "${env_file}" | cut -d'=' -f2- || true)"
+    [ -n "${admin_user}" ] || die "ADMIN_USERNAME vacio en ${env_file}."
+    [ -n "${admin_pass}" ] || die "ADMIN_PASSWORD vacio en ${env_file}."
+
+    if ! wait_for_http_endpoint "http://127.0.0.1:8000/login" 45; then
+        journalctl -u pg_manager --no-pager -n 120 || true
+        die "pg_manager no responde en /login tras iniciar servicio."
+    fi
+
+    payload="$("${APP_DIR}/venv/bin/python3" -c 'import json,sys; print(json.dumps({"username":sys.argv[1],"password":sys.argv[2]}))' "${admin_user}" "${admin_pass}")"
+    tmp_resp="$(mktemp /tmp/thl-sql-login-check.XXXXXX)"
+
+    http_code="$(curl -sS -o "${tmp_resp}" -w "%{http_code}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" \
+        "http://127.0.0.1:8000/login" || true)"
+
+    if [ "${http_code}" != "200" ]; then
+        warn "Verificacion login admin fallo (HTTP ${http_code}). Reintentando tras reinicio de pg_manager..."
+        systemctl restart pg_manager || true
+        sleep 2
+        http_code="$(curl -sS -o "${tmp_resp}" -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}" \
+            "http://127.0.0.1:8000/login" || true)"
+    fi
+
+    if [ "${http_code}" != "200" ]; then
+        cat "${tmp_resp}" >&2 || true
+        rm -f "${tmp_resp}" || true
+        journalctl -u pg_manager --no-pager -n 120 || true
+        die "Credencial admin no valida en la app (HTTP ${http_code})."
+    fi
+
+    rm -f "${tmp_resp}" || true
+    echo -e "${GREEN}[OK] Credencial admin validada en /login${NC}"
 }
 
 configure_nginx() {
@@ -1422,6 +1490,7 @@ final_report() {
     echo "Modo:           ${INSTALL_ACTION}"
     echo "Panel:          ${APP_URL}"
     echo "Usuario admin:  ${ADMIN_USERNAME}"
+    echo "Fuente clave:   ${ADMIN_PASSWORD_SOURCE}"
     if [ "${EXISTING_INSTALL}" = "1" ]; then
         echo "Upgrade:        instalacion previa detectada."
         if [ "${THL_PRESERVE_EXISTING}" = "1" ]; then
@@ -1469,6 +1538,7 @@ main() {
     run_install_step "6/11" "Generando archivo .env" write_env_file
     run_install_step "7/11" "Configurando stack SQL" configure_sql_stack
     run_install_step "8/11" "Configurando servicio systemd" configure_systemd_service
+    run_install_step "8b/11" "Validando login admin" verify_admin_login
     run_install_step "9/11" "Configurando Nginx" configure_nginx
     run_install_step "10/11" "Configurando firewall" configure_firewall
     run_install_step "11/11" "Configurando watchdog" configure_watchdog
