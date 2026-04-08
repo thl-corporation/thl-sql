@@ -39,11 +39,17 @@
     <nav class="bg-white/80 dark:bg-slate-900/80 backdrop-blur border-b border-slate-200/70 dark:border-slate-800/70">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between h-16">
-                <div class="flex items-center">
-                    <h1 class="text-xl font-semibold text-slate-900 dark:text-slate-100 tracking-tight">THL SQL Manager</h1>
+                <div class="flex items-center gap-3 min-w-0">
+                    <div id="brandLogoWrap" class="hidden w-9 h-9 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 shrink-0 bg-white dark:bg-slate-900">
+                        <img id="brandLogo" src="" alt="Logo" class="w-full h-full object-cover">
+                    </div>
+                    <h1 id="brandName" class="text-xl font-semibold text-slate-900 dark:text-slate-100 tracking-tight truncate">THL SQL Manager</h1>
                 </div>
                 <div class="flex items-center gap-3">
                     <span id="clock" class="text-sm font-mono text-slate-500 dark:text-slate-400"></span>
+                    <button id="profileBtn" class="inline-flex items-center gap-1 text-slate-600 dark:text-slate-300 hover:text-brand-700 dark:hover:text-brand-100 font-medium px-3 py-2 rounded-lg text-sm transition-colors border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800">
+                        Perfil
+                    </button>
                     <button id="themeToggle" class="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" aria-label="Cambiar tema" aria-pressed="false">
                         <span id="themeIconSun" class="hidden">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
@@ -279,6 +285,53 @@
         </div>
     </div>
 
+    <!-- Profile Modal -->
+    <div id="profileModal" class="fixed inset-0 bg-slate-900/60 hidden flex items-center justify-center z-50 backdrop-blur-sm">
+        <div class="bg-white/95 dark:bg-slate-900/95 rounded-2xl px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl shadow-slate-900/20 transition-all sm:max-w-xl sm:w-full sm:p-6 border border-slate-200/70 dark:border-slate-800/70">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg leading-6 font-semibold text-slate-900 dark:text-slate-100">Perfil</h3>
+                <button type="button" id="closeProfileModalBtn" class="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 text-xl leading-none px-1">&times;</button>
+            </div>
+
+            <form id="profileForm" class="space-y-4">
+                <div>
+                    <label for="profileAppName" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Nombre de la plataforma</label>
+                    <input type="text" id="profileAppName" minlength="2" maxlength="80" pattern="[A-Za-z0-9 _-]{2,80}" class="mt-1 block w-full border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-brand-500/30 focus:border-brand-500 sm:text-sm" required>
+                </div>
+                <div>
+                    <label for="profileLogoFile" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Logo</label>
+                    <input type="file" id="profileLogoFile" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" class="mt-1 block w-full text-sm text-slate-700 dark:text-slate-200 file:mr-3 file:rounded-md file:border-0 file:bg-brand-600 file:px-3 file:py-2 file:text-white hover:file:bg-brand-700">
+                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Máximo recomendado: 500 KB</p>
+                    <div class="mt-3 flex items-center gap-3">
+                        <div id="profileLogoPreviewWrap" class="hidden w-12 h-12 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950">
+                            <img id="profileLogoPreview" src="" alt="Logo preview" class="w-full h-full object-cover">
+                        </div>
+                        <button type="button" id="removeLogoBtn" class="text-xs text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 border border-red-200 dark:border-red-900/60 rounded px-2 py-1">Quitar logo</button>
+                    </div>
+                </div>
+                <div class="flex justify-end">
+                    <button type="submit" id="saveProfileBtn" class="inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-brand-600 text-sm font-semibold text-white hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500/60">
+                        Guardar perfil
+                    </button>
+                </div>
+            </form>
+
+            <div class="mt-6 pt-5 border-t border-slate-200 dark:border-slate-800">
+                <h4 class="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-3">Cambiar contraseña de inicio</h4>
+                <form id="passwordForm" class="space-y-3">
+                    <input type="password" id="currentPassword" placeholder="Contraseña actual" class="block w-full border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-brand-500/30 focus:border-brand-500 sm:text-sm" required>
+                    <input type="password" id="newPassword" placeholder="Nueva contraseña (mín. 10 caracteres)" minlength="10" class="block w-full border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-brand-500/30 focus:border-brand-500 sm:text-sm" required>
+                    <input type="password" id="confirmPassword" placeholder="Confirmar nueva contraseña" minlength="10" class="block w-full border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-brand-500/30 focus:border-brand-500 sm:text-sm" required>
+                    <div class="flex justify-end">
+                        <button type="submit" id="savePasswordBtn" class="inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-slate-900 dark:bg-slate-100 text-sm font-semibold text-white dark:text-slate-900 hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-400">
+                            Actualizar contraseña
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Notification -->
     <div id="toast" class="fixed bottom-5 right-5 bg-slate-900/90 dark:bg-slate-800/90 text-white px-4 py-2 rounded-xl shadow-lg shadow-slate-900/20 transform translate-y-20 transition-transform duration-300">
         Mensaje copiado
@@ -339,6 +392,18 @@
         let publicDbHost = 'localhost';
         let publicDbPort = 5432;
         let sqlAccessDatabases = [];
+        let currentProfile = { app_name: 'THL SQL Manager', logo_data: null };
+        let pendingLogoData = null;
+        const legacyAuthKeys = ['access_token', 'token', 'auth_token', 'csrf_token', 'session_token'];
+
+        function clearLegacyAuthStorage() {
+            legacyAuthKeys.forEach((key) => {
+                try { localStorage.removeItem(key); } catch (_) {}
+                try { sessionStorage.removeItem(key); } catch (_) {}
+            });
+        }
+
+        clearLegacyAuthStorage();
 
         function getCookie(name) {
             const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
@@ -371,6 +436,86 @@
             } catch (e) {
                 console.error("Failed to fetch config", e);
             }
+        }
+
+        function applyBrand(profile) {
+            const brandName = document.getElementById('brandName');
+            const brandLogoWrap = document.getElementById('brandLogoWrap');
+            const brandLogo = document.getElementById('brandLogo');
+            const appName = (profile && profile.app_name) ? profile.app_name : 'THL SQL Manager';
+            const logoData = profile ? profile.logo_data : null;
+
+            if (brandName) {
+                brandName.textContent = appName;
+            }
+            document.title = appName;
+
+            if (logoData) {
+                brandLogo.src = logoData;
+                brandLogoWrap.classList.remove('hidden');
+            } else {
+                brandLogo.src = '';
+                brandLogoWrap.classList.add('hidden');
+            }
+        }
+
+        function syncProfilePreview(logoData) {
+            const previewWrap = document.getElementById('profileLogoPreviewWrap');
+            const preview = document.getElementById('profileLogoPreview');
+            if (!previewWrap || !preview) return;
+            if (logoData) {
+                preview.src = logoData;
+                previewWrap.classList.remove('hidden');
+            } else {
+                preview.src = '';
+                previewWrap.classList.add('hidden');
+            }
+        }
+
+        async function loadProfile() {
+            try {
+                const res = await fetch('/api/profile');
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                if (!res.ok) return;
+                currentProfile = await res.json();
+                pendingLogoData = currentProfile.logo_data || null;
+                applyBrand(currentProfile);
+                const appNameInput = document.getElementById('profileAppName');
+                if (appNameInput) {
+                    appNameInput.value = currentProfile.app_name || 'THL SQL Manager';
+                }
+                syncProfilePreview(pendingLogoData);
+            } catch (e) {
+                console.error("Failed to load profile", e);
+            }
+        }
+
+        function openProfileModal() {
+            const modal = document.getElementById('profileModal');
+            const fileInput = document.getElementById('profileLogoFile');
+            pendingLogoData = currentProfile.logo_data || null;
+            const appNameInput = document.getElementById('profileAppName');
+            if (appNameInput) {
+                appNameInput.value = currentProfile.app_name || 'THL SQL Manager';
+            }
+            if (fileInput) {
+                fileInput.value = '';
+            }
+            syncProfilePreview(pendingLogoData);
+            modal.classList.remove('hidden');
+        }
+
+        function closeProfileModal() {
+            document.getElementById('profileModal').classList.add('hidden');
+        }
+
+        function fileToDataUrl(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = () => reject(new Error('No se pudo leer el archivo'));
+                reader.readAsDataURL(file);
+            });
         }
 
         // --- KPI Charts Configuration ---
@@ -763,6 +908,81 @@
             }, 3000);
         }
 
+        async function saveProfile(event) {
+            event.preventDefault();
+            const saveButton = document.getElementById('saveProfileBtn');
+            const appName = document.getElementById('profileAppName').value.trim();
+
+            try {
+                if (saveButton) {
+                    setActionButtonLoading(saveButton, true, 'Guardando...');
+                }
+                const res = await csrfFetch('/api/profile', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        app_name: appName,
+                        logo_data: pendingLogoData
+                    })
+                });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.detail || 'No se pudo guardar el perfil');
+                }
+                currentProfile = data;
+                applyBrand(currentProfile);
+                showToast('Perfil actualizado');
+                closeProfileModal();
+            } catch (error) {
+                alert(error.message || 'Error de conexión');
+            } finally {
+                if (saveButton) {
+                    setActionButtonLoading(saveButton, false);
+                }
+            }
+        }
+
+        async function savePassword(event) {
+            event.preventDefault();
+            const saveButton = document.getElementById('savePasswordBtn');
+            const currentPassword = document.getElementById('currentPassword').value;
+            const newPassword = document.getElementById('newPassword').value;
+            const confirmPassword = document.getElementById('confirmPassword').value;
+
+            if (newPassword !== confirmPassword) {
+                alert('La confirmación no coincide');
+                return;
+            }
+
+            try {
+                if (saveButton) {
+                    setActionButtonLoading(saveButton, true, 'Actualizando...');
+                }
+                const res = await csrfFetch('/api/profile/password', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        current_password: currentPassword,
+                        new_password: newPassword
+                    })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.detail || 'No se pudo actualizar la contraseña');
+                }
+                showToast('Contraseña actualizada');
+                alert('Contraseña actualizada. Debes iniciar sesión nuevamente.');
+                window.location.href = '/login';
+            } catch (error) {
+                alert(error.message || 'Error de conexión');
+            } finally {
+                if (saveButton) {
+                    setActionButtonLoading(saveButton, false);
+                }
+            }
+        }
+
         // --- Port Management ---
         async function fetchPorts() {
             const list = document.getElementById('portsList');
@@ -1113,6 +1333,7 @@
         // --- Init ---
         document.addEventListener('DOMContentLoaded', () => {
             fetchConfig();
+            loadProfile();
             initCharts();
             setInterval(fetchMetrics, UPDATE_INTERVAL);
             fetchMetrics();
@@ -1126,6 +1347,59 @@
             const refreshSqlAccessButton = document.getElementById('refreshSqlAccessButton');
             if (refreshSqlAccessButton) {
                 refreshSqlAccessButton.addEventListener('click', fetchSqlAccess);
+            }
+
+            const profileBtn = document.getElementById('profileBtn');
+            const closeProfileModalBtn = document.getElementById('closeProfileModalBtn');
+            const profileModal = document.getElementById('profileModal');
+            const profileLogoFile = document.getElementById('profileLogoFile');
+            const removeLogoBtn = document.getElementById('removeLogoBtn');
+            const profileForm = document.getElementById('profileForm');
+            const passwordForm = document.getElementById('passwordForm');
+
+            if (profileBtn) {
+                profileBtn.addEventListener('click', openProfileModal);
+            }
+            if (closeProfileModalBtn) {
+                closeProfileModalBtn.addEventListener('click', closeProfileModal);
+            }
+            if (profileModal) {
+                profileModal.addEventListener('click', (event) => {
+                    if (event.target === profileModal) {
+                        closeProfileModal();
+                    }
+                });
+            }
+            if (profileLogoFile) {
+                profileLogoFile.addEventListener('change', async (event) => {
+                    const file = event.target.files && event.target.files[0];
+                    if (!file) return;
+                    if (file.size > 512000) {
+                        alert('El logo excede 500 KB');
+                        event.target.value = '';
+                        return;
+                    }
+                    try {
+                        pendingLogoData = await fileToDataUrl(file);
+                        syncProfilePreview(pendingLogoData);
+                    } catch (error) {
+                        alert('No se pudo cargar el logo');
+                    }
+                });
+            }
+            if (removeLogoBtn) {
+                removeLogoBtn.addEventListener('click', () => {
+                    pendingLogoData = null;
+                    const fileInput = document.getElementById('profileLogoFile');
+                    if (fileInput) fileInput.value = '';
+                    syncProfilePreview(null);
+                });
+            }
+            if (profileForm) {
+                profileForm.addEventListener('submit', saveProfile);
+            }
+            if (passwordForm) {
+                passwordForm.addEventListener('submit', savePassword);
             }
         });
 
