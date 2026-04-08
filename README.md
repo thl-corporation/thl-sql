@@ -80,6 +80,7 @@ THL_ACTION=uninstall THL_FORCE=1 curl -fsSL https://raw.githubusercontent.com/th
 Interactive one-link behavior:
 
 - If you run `curl ... | bash` from a terminal and do not set `THL_ACTION`, installer shows the 3 options menu automatically.
+- Each installer phase prints `OK` on success; if any phase fails, it auto-generates a diagnostic report in `/var/log/thl-sql-failure-*.log`.
 
 UX one-command with domain (recommended for production):
 

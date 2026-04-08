@@ -30,6 +30,9 @@ EXISTING_INSTALL="0"
 EXISTING_ENV_FILE="${APP_DIR}/backend/.env"
 EXISTING_ENV_BACKUP=""
 INSTALL_ACTION="upgrade"
+CURRENT_STEP_INDEX="preflight"
+CURRENT_STEP_NAME="inicio"
+FAILURE_REPORT_FILE=""
 
 log() {
     echo -e "${CYAN}$*${NC}"
@@ -44,19 +47,94 @@ die() {
     exit 1
 }
 
+collect_failure_diagnostics() {
+    local exit_code="${1:-1}"
+    local line_no="${2:-unknown}"
+    local failed_command="${3:-unknown}"
+    local ts
+
+    ts="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)"
+    FAILURE_REPORT_FILE="/var/log/thl-sql-failure-${ts}.log"
+
+    mkdir -p /var/log >/dev/null 2>&1 || true
+
+    {
+        echo "=== THL SQL Failure Diagnostics ==="
+        echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)"
+        echo "Step: ${CURRENT_STEP_INDEX} - ${CURRENT_STEP_NAME}"
+        echo "Line: ${line_no}"
+        echo "Exit code: ${exit_code}"
+        echo "Failed command: ${failed_command}"
+        echo ""
+        echo "[System]"
+        uname -a || true
+        [ -f /etc/os-release ] && cat /etc/os-release || true
+        echo ""
+        echo "[Resources]"
+        df -h || true
+        free -m || true
+        echo ""
+        echo "[Service State]"
+        systemctl is-active postgresql pgbouncer haproxy pg_manager nginx 2>/dev/null || true
+        for svc in postgresql pgbouncer haproxy pg_manager nginx; do
+            echo ""
+            echo "--- systemctl status ${svc} ---"
+            systemctl status "${svc}" --no-pager -l 2>/dev/null || true
+            echo "--- journalctl -u ${svc} (last 120) ---"
+            journalctl -u "${svc}" --no-pager -n 120 2>/dev/null || true
+        done
+        echo ""
+        echo "[Network]"
+        ss -ltn || true
+        if command -v pg_lsclusters >/dev/null 2>&1; then
+            echo ""
+            echo "[pg_lsclusters]"
+            pg_lsclusters || true
+        fi
+    } > "${FAILURE_REPORT_FILE}" 2>&1
+
+    warn "Diagnostico de fallo generado: ${FAILURE_REPORT_FILE}"
+}
+
 on_error() {
     local exit_code="$?"
     local line_no="${BASH_LINENO[0]:-unknown}"
     local failed_command="${BASH_COMMAND:-unknown}"
 
+    trap - ERR
+    set +e
+    collect_failure_diagnostics "${exit_code}" "${line_no}" "${failed_command}"
+
     echo -e "${RED}Error: fallo en linea ${line_no} (exit ${exit_code}): ${failed_command}${NC}" >&2
+    echo -e "${YELLOW}Paso actual: ${CURRENT_STEP_INDEX} - ${CURRENT_STEP_NAME}${NC}" >&2
     if [ -n "${THL_INSTALL_LOG_FILE:-}" ]; then
-        echo -e "${YELLOW}Log: ${THL_INSTALL_LOG_FILE}${NC}" >&2
+        echo -e "${YELLOW}Log principal: ${THL_INSTALL_LOG_FILE}${NC}" >&2
+    fi
+    if [ -n "${FAILURE_REPORT_FILE:-}" ]; then
+        echo -e "${YELLOW}Diagnostico: ${FAILURE_REPORT_FILE}${NC}" >&2
     fi
     exit "${exit_code}"
 }
 
 trap 'on_error' ERR
+
+run_install_step() {
+    local step_index="$1"
+    local step_name="$2"
+    local step_fn="$3"
+    local start_ts end_ts elapsed
+
+    CURRENT_STEP_INDEX="${step_index}"
+    CURRENT_STEP_NAME="${step_name}"
+    start_ts="$(date +%s)"
+
+    log "[STEP ${step_index}] ${step_name}"
+    "${step_fn}"
+
+    end_ts="$(date +%s)"
+    elapsed=$((end_ts - start_ts))
+    echo -e "${GREEN}[OK] Paso ${step_index}: ${step_name} (${elapsed}s)${NC}"
+}
 
 require_root() {
     if [ "$(id -u)" -ne 0 ]; then
@@ -1366,30 +1444,30 @@ main() {
     echo -e "${CYAN}  THL SQL - Instalador Multi-Distro${NC}"
     echo -e "${CYAN}========================================${NC}"
 
-    validate_install_settings
-    require_root
-    init_install_logging
-    require_systemd
-    detect_os
-    auto_cleanup_cache
-    ensure_repo_source
-    detect_existing_installation
-    select_install_action
-    handle_install_action
-    install_prerequisites
-    collect_input
-    show_summary
-    configure_dns
-    configure_postgres_service
-    deploy_app
-    setup_python_env
-    write_env_file
-    configure_sql_stack
-    configure_systemd_service
-    configure_nginx
-    configure_firewall
-    configure_watchdog
-    final_report
+    run_install_step "P1" "Validando configuracion del instalador" validate_install_settings
+    run_install_step "P2" "Validando permisos root" require_root
+    run_install_step "P3" "Inicializando logging" init_install_logging
+    run_install_step "P4" "Validando systemd" require_systemd
+    run_install_step "P5" "Detectando sistema operativo" detect_os
+    run_install_step "P6" "Limpieza automatica de cache" auto_cleanup_cache
+    run_install_step "P7" "Preparando fuente del repositorio" ensure_repo_source
+    run_install_step "P8" "Detectando instalacion existente" detect_existing_installation
+    run_install_step "P9" "Seleccionando modo de instalacion" select_install_action
+    run_install_step "P10" "Aplicando accion de instalacion" handle_install_action
+    run_install_step "1/11" "Instalando dependencias del sistema" install_prerequisites
+    run_install_step "INPUT" "Recolectando parametros de instalacion" collect_input
+    run_install_step "RESUMEN" "Mostrando resumen de instalacion" show_summary
+    run_install_step "2/11" "Ajustando DNS del sistema" configure_dns
+    run_install_step "3/11" "Configurando PostgreSQL" configure_postgres_service
+    run_install_step "4/11" "Desplegando aplicacion" deploy_app
+    run_install_step "5/11" "Instalando dependencias Python" setup_python_env
+    run_install_step "6/11" "Generando archivo .env" write_env_file
+    run_install_step "7/11" "Configurando stack SQL" configure_sql_stack
+    run_install_step "8/11" "Configurando servicio systemd" configure_systemd_service
+    run_install_step "9/11" "Configurando Nginx" configure_nginx
+    run_install_step "10/11" "Configurando firewall" configure_firewall
+    run_install_step "11/11" "Configurando watchdog" configure_watchdog
+    run_install_step "FINAL" "Generando reporte final" final_report
 }
 
 main "$@"
