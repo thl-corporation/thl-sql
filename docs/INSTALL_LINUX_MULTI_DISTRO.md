@@ -79,6 +79,7 @@ THL_ACTION=uninstall THL_FORCE=1 curl -fsSL https://raw.githubusercontent.com/th
 
 Con `curl ... | bash` en una terminal, si no defines `THL_ACTION`, el instalador muestra automaticamente estas 3 opciones.
 Adicionalmente, cada fase muestra `OK` al terminar; si una fase falla, se genera diagnostico automatico en `/var/log/thl-sql-failure-*.log`.
+El watchdog se instala via `/etc/cron.d/thl_sql_watchdog` para evitar fallas por crontab de usuario corrupto.
 
 ## UX recomendado con dominio
 

@@ -24,6 +24,7 @@ FIREWALL_BACKEND=""
 OS_FAMILY=""
 PKG_TOOL=""
 NGINX_CONF_FILE="/etc/nginx/conf.d/pg_manager.conf"
+CRON_WATCHDOG_FILE="/etc/cron.d/thl_sql_watchdog"
 ADMIN_PASSWORD_GENERATED="0"
 UX_MODE_ACTIVE="0"
 EXISTING_INSTALL="0"
@@ -409,9 +410,11 @@ disable_service_if_exists() {
 }
 
 remove_watchdog_cron() {
+    remove_file_if_exists "${CRON_WATCHDOG_FILE}"
+    # Cleanup legacy user-crontab entry when crontab is parseable.
     local current
     current="$(crontab -l 2>/dev/null || true)"
-    if [ -n "${current}" ]; then
+    if [ -n "${current}" ] && printf '%s\n' "${current}" | grep -q "pg_manager_watchdog.sh"; then
         printf '%s\n' "${current}" | grep -v "pg_manager_watchdog.sh" | crontab - || true
     fi
 }
@@ -1401,8 +1404,10 @@ configure_watchdog() {
     cp "${APP_DIR}/server/pg_manager_watchdog.sh" /usr/local/bin/pg_manager_watchdog.sh
     chmod +x /usr/local/bin/pg_manager_watchdog.sh
 
-    (crontab -l 2>/dev/null | grep -q "pg_manager_watchdog.sh") || \
-        (crontab -l 2>/dev/null; echo "* * * * * /usr/local/bin/pg_manager_watchdog.sh") | crontab -
+    cat > "${CRON_WATCHDOG_FILE}" <<CRONEOF
+* * * * * root /usr/local/bin/pg_manager_watchdog.sh
+CRONEOF
+    chmod 644 "${CRON_WATCHDOG_FILE}"
 }
 
 final_report() {
