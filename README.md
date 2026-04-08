@@ -53,6 +53,28 @@ Supported families:
 - `THL_SYSTEM_UPGRADE_POLICY=none|upgrade|full` (default: `full`)
 - `THL_UX_MODE=1` (default, minimal prompts)
 - `THL_PRESERVE_EXISTING=1` (default, keeps existing credentials/config on upgrade)
+- `THL_ACTION=reinstall|upgrade|uninstall`
+- `THL_FORCE=1` (required for non-interactive destructive actions)
+
+## Installation Modes (3 options)
+
+1. Full wipe + new install:
+
+```bash
+THL_ACTION=reinstall THL_FORCE=1 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
+
+2. Upgrade in place (preserve credentials/config):
+
+```bash
+THL_ACTION=upgrade curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
+
+3. Uninstall app and all managed data:
+
+```bash
+THL_ACTION=uninstall THL_FORCE=1 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
 
 UX one-command with domain (recommended for production):
 

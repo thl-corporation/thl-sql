@@ -53,6 +53,28 @@ Variables:
 - `THL_SYSTEM_UPGRADE_POLICY=none|upgrade|full` (opcional, default `full`)
 - `THL_UX_MODE=1` (opcional, default: menos prompts)
 - `THL_PRESERVE_EXISTING=1` (opcional, default: conserva credenciales/configuracion en upgrades)
+- `THL_ACTION=reinstall|upgrade|uninstall` (opcional)
+- `THL_FORCE=1` (opcional, requerido para acciones destructivas sin prompt)
+
+## Modos de instalacion (3 opciones)
+
+1) Borrado completo + instalacion nueva:
+
+```bash
+THL_ACTION=reinstall THL_FORCE=1 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
+
+2) Actualizacion (mantiene credenciales y configuracion):
+
+```bash
+THL_ACTION=upgrade curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
+
+3) Eliminar aplicacion y todos los datos gestionados:
+
+```bash
+THL_ACTION=uninstall THL_FORCE=1 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
 
 ## UX recomendado con dominio
 

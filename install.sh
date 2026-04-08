@@ -17,6 +17,8 @@ THL_INSTALL_LOG_INITIALIZED="${THL_INSTALL_LOG_INITIALIZED:-0}"
 THL_UX_MODE="${THL_UX_MODE:-1}"
 THL_INSTALL_SUMMARY_FILE="${THL_INSTALL_SUMMARY_FILE:-/root/thl-sql-install-summary.txt}"
 THL_PRESERVE_EXISTING="${THL_PRESERVE_EXISTING:-1}"
+THL_ACTION="${THL_ACTION:-}"
+THL_FORCE="${THL_FORCE:-0}"
 FIREWALL_BACKEND=""
 OS_FAMILY=""
 PKG_TOOL=""
@@ -26,6 +28,7 @@ UX_MODE_ACTIVE="0"
 EXISTING_INSTALL="0"
 EXISTING_ENV_FILE="${APP_DIR}/backend/.env"
 EXISTING_ENV_BACKUP=""
+INSTALL_ACTION="upgrade"
 
 log() {
     echo -e "${CYAN}$*${NC}"
@@ -94,6 +97,22 @@ validate_install_settings() {
             die "Valor invalido THL_PRESERVE_EXISTING=${THL_PRESERVE_EXISTING}. Usa 0 o 1."
             ;;
     esac
+
+    case "${THL_FORCE}" in
+        0|1) ;;
+        *)
+            die "Valor invalido THL_FORCE=${THL_FORCE}. Usa 0 o 1."
+            ;;
+    esac
+
+    if [ -n "${THL_ACTION}" ]; then
+        case "${THL_ACTION}" in
+            reinstall|upgrade|uninstall) ;;
+            *)
+                die "Valor invalido THL_ACTION=${THL_ACTION}. Usa reinstall, upgrade o uninstall."
+                ;;
+        esac
+    fi
 }
 
 init_install_logging() {
@@ -185,6 +204,169 @@ detect_existing_installation() {
     else
         warn "Instalacion existente detectada. THL_PRESERVE_EXISTING=0, se aplicara reconfiguracion completa."
     fi
+}
+
+disable_service_if_exists() {
+    local svc="$1"
+    if systemctl list-unit-files | grep -q "^${svc}\.service"; then
+        systemctl disable --now "${svc}" >/dev/null 2>&1 || true
+    fi
+}
+
+remove_watchdog_cron() {
+    local current
+    current="$(crontab -l 2>/dev/null || true)"
+    if [ -n "${current}" ]; then
+        printf '%s\n' "${current}" | grep -v "pg_manager_watchdog.sh" | crontab - || true
+    fi
+}
+
+remove_file_if_exists() {
+    local file="$1"
+    if [ -f "${file}" ]; then
+        rm -f "${file}"
+    fi
+}
+
+validate_safe_delete_target() {
+    local target="$1"
+    [ -n "${target}" ] || die "Ruta vacia para borrado."
+    [[ "${target}" = /* ]] || die "Ruta no absoluta para borrado: ${target}"
+    case "${target}" in
+        "/"|"/root"|"/home"|"/opt"|"/tmp"|"/var"|"/usr"|"/etc")
+            die "Ruta insegura para borrado: ${target}"
+            ;;
+    esac
+}
+
+remove_dir_if_exists_safe() {
+    local target="$1"
+    if [ -d "${target}" ]; then
+        validate_safe_delete_target "${target}"
+        rm -rf "${target}"
+    fi
+}
+
+package_remove_stack() {
+    if [ "${PKG_TOOL}" = "apt" ]; then
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y postgresql postgresql-contrib pgbouncer haproxy nginx certbot python3-certbot-nginx || true
+        DEBIAN_FRONTEND=noninteractive apt-get autoremove -y || true
+        return
+    fi
+    if [ "${PKG_TOOL}" = "dnf" ]; then
+        dnf remove -y postgresql-server postgresql-contrib pgbouncer haproxy nginx certbot python3-certbot-nginx || true
+        dnf autoremove -y || true
+        return
+    fi
+    yum remove -y postgresql-server postgresql-contrib pgbouncer haproxy nginx certbot python3-certbot-nginx || true
+}
+
+perform_destructive_cleanup() {
+    log "Iniciando limpieza completa de instalacion previa..."
+
+    disable_service_if_exists pg_manager
+    disable_service_if_exists pgbouncer
+    disable_service_if_exists haproxy
+    disable_service_if_exists nginx
+    disable_service_if_exists postgresql
+
+    remove_watchdog_cron
+    remove_file_if_exists /usr/local/bin/pg_manager_watchdog.sh
+    remove_file_if_exists /usr/local/bin/configure_postgres_timeouts.sh
+    remove_file_if_exists /etc/systemd/system/pg_manager.service
+    remove_file_if_exists "${NGINX_CONF_FILE}"
+    remove_file_if_exists /etc/haproxy/haproxy.cfg
+
+    remove_dir_if_exists_safe "${APP_DIR}"
+    remove_dir_if_exists_safe /etc/pgbouncer
+    remove_dir_if_exists_safe /etc/postgresql
+    remove_dir_if_exists_safe /var/lib/postgresql
+    remove_dir_if_exists_safe /var/lib/pgsql
+
+    package_remove_stack
+    systemctl daemon-reload || true
+
+    if [ -n "${EXISTING_ENV_BACKUP}" ] && [ -f "${EXISTING_ENV_BACKUP}" ]; then
+        rm -f "${EXISTING_ENV_BACKUP}" || true
+        EXISTING_ENV_BACKUP=""
+    fi
+}
+
+confirm_destructive_action() {
+    local action="$1"
+    if [ "${THL_FORCE}" = "1" ]; then
+        return
+    fi
+
+    if ! has_tty; then
+        die "Accion ${action} requiere confirmacion. Reintenta con THL_FORCE=1."
+    fi
+
+    echo ""
+    echo -e "${YELLOW}ADVERTENCIA:${NC} ${action} eliminara aplicacion y datos gestionados."
+    read -r -p "Escribe ELIMINAR para continuar: " CONFIRM_DELETE < /dev/tty
+    if [ "${CONFIRM_DELETE}" != "ELIMINAR" ]; then
+        die "Operacion cancelada por usuario."
+    fi
+}
+
+select_install_action() {
+    if [ -n "${THL_ACTION}" ]; then
+        INSTALL_ACTION="${THL_ACTION}"
+        return
+    fi
+
+    if [ "${THL_UX_MODE}" = "1" ] || [ "${THL_NONINTERACTIVE:-0}" = "1" ] || ! has_tty; then
+        if [ "${EXISTING_INSTALL}" = "1" ]; then
+            INSTALL_ACTION="upgrade"
+        else
+            INSTALL_ACTION="reinstall"
+        fi
+        return
+    fi
+
+    echo ""
+    echo "Selecciona modo de operacion:"
+    echo "1) Borrado completo + instalacion nueva"
+    echo "2) Actualizacion (preserva configuracion) [recomendado]"
+    echo "3) Eliminar aplicacion y todos los datos"
+    read -r -p "Opcion [2]: " ACTION_OPTION < /dev/tty
+    ACTION_OPTION="${ACTION_OPTION:-2}"
+    case "${ACTION_OPTION}" in
+        1) INSTALL_ACTION="reinstall" ;;
+        2) INSTALL_ACTION="upgrade" ;;
+        3) INSTALL_ACTION="uninstall" ;;
+        *)
+            warn "Opcion invalida. Se usara actualizacion."
+            INSTALL_ACTION="upgrade"
+            ;;
+    esac
+}
+
+handle_install_action() {
+    case "${INSTALL_ACTION}" in
+        reinstall)
+            log "Modo seleccionado: borrado completo + instalacion."
+            confirm_destructive_action "reinstall"
+            perform_destructive_cleanup
+            EXISTING_INSTALL="0"
+            THL_PRESERVE_EXISTING=0
+            ;;
+        upgrade)
+            log "Modo seleccionado: actualizacion."
+            ;;
+        uninstall)
+            log "Modo seleccionado: eliminar aplicacion y datos."
+            confirm_destructive_action "uninstall"
+            perform_destructive_cleanup
+            echo ""
+            echo -e "${GREEN}THL SQL eliminado correctamente del servidor.${NC}"
+            exit 0
+            ;;
+        *)
+            die "Modo de accion no soportado: ${INSTALL_ACTION}"
+            ;;
+    esac
 }
 
 detect_os() {
@@ -505,6 +687,8 @@ ensure_repo_source() {
     export THL_UX_MODE
     export THL_INSTALL_SUMMARY_FILE
     export THL_PRESERVE_EXISTING
+    export THL_ACTION
+    export THL_FORCE
 
     exec bash "${BOOTSTRAP_DIR}/install.sh"
 }
@@ -651,6 +835,7 @@ write_install_summary_file() {
     mkdir -p "$(dirname "${THL_INSTALL_SUMMARY_FILE}")"
     {
         echo "THL SQL - Resumen de instalacion"
+        echo "Modo: ${INSTALL_ACTION}"
         echo "Panel URL: ${APP_URL}"
         echo "Admin user: ${ADMIN_USERNAME}"
         if [ "${EXISTING_INSTALL}" = "1" ]; then
@@ -1007,6 +1192,7 @@ final_report() {
     echo -e "${GREEN}========================================${NC}"
     echo -e "${GREEN}  Instalacion completada${NC}"
     echo -e "${GREEN}========================================${NC}"
+    echo "Modo:           ${INSTALL_ACTION}"
     echo "Panel:          ${APP_URL}"
     echo "Usuario admin:  ${ADMIN_USERNAME}"
     if [ "${EXISTING_INSTALL}" = "1" ]; then
@@ -1043,6 +1229,8 @@ main() {
     detect_os
     ensure_repo_source
     detect_existing_installation
+    select_install_action
+    handle_install_action
     install_prerequisites
     collect_input
     show_summary
