@@ -52,6 +52,7 @@ Variables:
 - `THL_INSTALL_LOG_FILE=/var/log/thl-sql-install.log` (opcional)
 - `THL_SYSTEM_UPGRADE_POLICY=none|upgrade|full` (opcional, default `full`)
 - `THL_UX_MODE=1` (opcional, default: menos prompts)
+- `THL_PRESERVE_EXISTING=1` (opcional, default: conserva credenciales/configuracion en upgrades)
 
 ## UX recomendado con dominio
 
@@ -66,6 +67,7 @@ Comportamiento:
 
 - Si `THL_DOMAIN` viene definido, usa flujo HTTPS (certbot).
 - Si `THL_DOMAIN` no viene definido, usa modo IP:puerto.
+- Si detecta instalacion previa, preserva usuario admin, password admin y configuracion existente (`backend/.env`) por defecto.
 
 ## VPS Ubuntu vacio: preflight recomendado
 

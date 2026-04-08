@@ -52,6 +52,7 @@ Supported families:
 - `THL_INSTALL_LOG_FILE=/var/log/thl-sql-install.log`
 - `THL_SYSTEM_UPGRADE_POLICY=none|upgrade|full` (default: `full`)
 - `THL_UX_MODE=1` (default, minimal prompts)
+- `THL_PRESERVE_EXISTING=1` (default, keeps existing credentials/config on upgrade)
 
 UX one-command with domain (recommended for production):
 
@@ -99,6 +100,7 @@ Domain note:
 
 - If `THL_DOMAIN` is set, installer uses HTTPS flow with certbot.
 - If `THL_DOMAIN` is empty, installer uses IP mode (`http://IP:PORT`).
+- If an existing install is detected, credentials and current `.env` settings are preserved by default.
 
 ## Technical Validation
 

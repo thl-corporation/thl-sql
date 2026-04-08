@@ -16,12 +16,16 @@ THL_SYSTEM_UPGRADE_POLICY="${THL_SYSTEM_UPGRADE_POLICY:-full}"
 THL_INSTALL_LOG_INITIALIZED="${THL_INSTALL_LOG_INITIALIZED:-0}"
 THL_UX_MODE="${THL_UX_MODE:-1}"
 THL_INSTALL_SUMMARY_FILE="${THL_INSTALL_SUMMARY_FILE:-/root/thl-sql-install-summary.txt}"
+THL_PRESERVE_EXISTING="${THL_PRESERVE_EXISTING:-1}"
 FIREWALL_BACKEND=""
 OS_FAMILY=""
 PKG_TOOL=""
 NGINX_CONF_FILE="/etc/nginx/conf.d/pg_manager.conf"
 ADMIN_PASSWORD_GENERATED="0"
 UX_MODE_ACTIVE="0"
+EXISTING_INSTALL="0"
+EXISTING_ENV_FILE="${APP_DIR}/backend/.env"
+EXISTING_ENV_BACKUP=""
 
 log() {
     echo -e "${CYAN}$*${NC}"
@@ -83,6 +87,13 @@ validate_install_settings() {
             die "Valor invalido THL_UX_MODE=${THL_UX_MODE}. Usa 0 o 1."
             ;;
     esac
+
+    case "${THL_PRESERVE_EXISTING}" in
+        0|1) ;;
+        *)
+            die "Valor invalido THL_PRESERVE_EXISTING=${THL_PRESERVE_EXISTING}. Usa 0 o 1."
+            ;;
+    esac
 }
 
 init_install_logging() {
@@ -109,6 +120,71 @@ init_install_logging() {
 
 has_tty() {
     [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
+get_existing_env_source() {
+    if [ -n "${EXISTING_ENV_BACKUP}" ] && [ -f "${EXISTING_ENV_BACKUP}" ]; then
+        echo "${EXISTING_ENV_BACKUP}"
+        return
+    fi
+    if [ -f "${EXISTING_ENV_FILE}" ]; then
+        echo "${EXISTING_ENV_FILE}"
+        return
+    fi
+    echo ""
+}
+
+existing_env_value() {
+    local key="$1"
+    local source_file
+    source_file="$(get_existing_env_source)"
+    if [ -z "${source_file}" ] || [ ! -f "${source_file}" ]; then
+        return 0
+    fi
+    grep -m1 "^${key}=" "${source_file}" | cut -d'=' -f2- || true
+}
+
+set_env_key() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+    local escaped
+    escaped="$(printf '%s' "${value}" | sed -e 's/[\/&]/\\&/g')"
+    if grep -q "^${key}=" "${file}"; then
+        sed -i "s|^${key}=.*|${key}=${escaped}|" "${file}"
+    else
+        printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+    fi
+}
+
+ensure_env_key() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+    if ! grep -q "^${key}=" "${file}"; then
+        printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+    fi
+}
+
+extract_http_port_from_origins() {
+    local origins="$1"
+    printf '%s\n' "${origins}" | tr ',' '\n' | sed -n 's#^http://[^:]\+:\([0-9][0-9]*\).*$#\1#p' | head -1
+}
+
+detect_existing_installation() {
+    if [ ! -f "${EXISTING_ENV_FILE}" ]; then
+        return
+    fi
+
+    EXISTING_INSTALL="1"
+    if [ "${THL_PRESERVE_EXISTING}" = "1" ]; then
+        EXISTING_ENV_BACKUP="$(mktemp /tmp/thl-sql-existing-env.XXXXXX)"
+        cp "${EXISTING_ENV_FILE}" "${EXISTING_ENV_BACKUP}"
+        chmod 600 "${EXISTING_ENV_BACKUP}" || true
+        log "Instalacion existente detectada. Se preservaran credenciales/configuracion."
+    else
+        warn "Instalacion existente detectada. THL_PRESERVE_EXISTING=0, se aplicara reconfiguracion completa."
+    fi
 }
 
 detect_os() {
@@ -428,15 +504,33 @@ ensure_repo_source() {
     export THL_INSTALL_LOG_INITIALIZED
     export THL_UX_MODE
     export THL_INSTALL_SUMMARY_FILE
+    export THL_PRESERVE_EXISTING
 
     exec bash "${BOOTSTRAP_DIR}/install.sh"
 }
 
 collect_input() {
     local interactive_mode=1
+    local existing_admin_username=""
+    local existing_admin_password=""
+    local existing_db_password=""
+    local existing_public_db_host=""
+    local existing_cookie_secure=""
+    local existing_allowed_origins=""
+    local existing_http_port=""
     SERVER_IP="$(curl -fsS --max-time 5 https://ifconfig.me || hostname -I | awk '{print $1}')"
     if [ -z "${SERVER_IP}" ]; then
         SERVER_IP="127.0.0.1"
+    fi
+
+    if [ "${EXISTING_INSTALL}" = "1" ] && [ "${THL_PRESERVE_EXISTING}" = "1" ]; then
+        existing_admin_username="$(existing_env_value ADMIN_USERNAME)"
+        existing_admin_password="$(existing_env_value ADMIN_PASSWORD)"
+        existing_db_password="$(existing_env_value DB_PASSWORD)"
+        existing_public_db_host="$(existing_env_value PUBLIC_DB_HOST)"
+        existing_cookie_secure="$(existing_env_value COOKIE_SECURE)"
+        existing_allowed_origins="$(existing_env_value ALLOWED_ORIGINS)"
+        existing_http_port="$(extract_http_port_from_origins "${existing_allowed_origins}")"
     fi
 
     if [ "${THL_UX_MODE}" = "1" ]; then
@@ -451,7 +545,7 @@ collect_input() {
         interactive_mode=0
     fi
 
-    ADMIN_USERNAME="${THL_ADMIN_USER:-}"
+    ADMIN_USERNAME="${THL_ADMIN_USER:-${existing_admin_username:-}}"
     if [ -z "${ADMIN_USERNAME}" ]; then
         if [ "${interactive_mode}" = "1" ]; then
             read -r -p "Usuario administrador [admin]: " ADMIN_USERNAME < /dev/tty
@@ -461,7 +555,7 @@ collect_input() {
         ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
     fi
 
-    ADMIN_PASSWORD="${THL_ADMIN_PASS:-}"
+    ADMIN_PASSWORD="${THL_ADMIN_PASS:-${existing_admin_password:-}}"
     if [ -z "${ADMIN_PASSWORD}" ]; then
         if [ "${interactive_mode}" = "1" ]; then
             while true; do
@@ -484,6 +578,9 @@ collect_input() {
     fi
 
     DOMAIN="${THL_DOMAIN:-}"
+    if [ -z "${DOMAIN}" ] && [ "${THL_PRESERVE_EXISTING}" = "1" ] && [ "${EXISTING_INSTALL}" = "1" ] && [ "${existing_cookie_secure}" = "true" ]; then
+        DOMAIN="${existing_public_db_host}"
+    fi
     if [ -z "${DOMAIN}" ] && [ "${interactive_mode}" = "1" ]; then
         echo ""
         echo "Si tienes dominio, ingresalo. Si no, deja vacio y se usa IP:puerto."
@@ -506,20 +603,20 @@ collect_input() {
         USE_DOMAIN="false"
         if [ -z "${WEB_PORT}" ]; then
             if [ "${interactive_mode}" = "0" ]; then
-                WEB_PORT="80"
+                WEB_PORT="${existing_http_port:-80}"
             else
                 read -r -p "Puerto para panel web [80]: " WEB_PORT < /dev/tty
                 WEB_PORT="${WEB_PORT:-80}"
             fi
         fi
-        BIND_IP="${THL_BIND_IP:-${SERVER_IP}}"
+        BIND_IP="${THL_BIND_IP:-${existing_public_db_host:-${SERVER_IP}}}"
         APP_URL="http://${BIND_IP}:${WEB_PORT}"
         ALLOWED_ORIGINS="http://${BIND_IP}:${WEB_PORT},http://${BIND_IP}"
         COOKIE_SECURE="false"
         PUBLIC_DB_HOST="${BIND_IP}"
     fi
 
-    PG_PASSWORD="${THL_PG_PASSWORD:-}"
+    PG_PASSWORD="${THL_PG_PASSWORD:-${existing_db_password:-}}"
     if [ -z "${PG_PASSWORD}" ]; then
         PG_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=')"
     fi
@@ -556,6 +653,12 @@ write_install_summary_file() {
         echo "THL SQL - Resumen de instalacion"
         echo "Panel URL: ${APP_URL}"
         echo "Admin user: ${ADMIN_USERNAME}"
+        if [ "${EXISTING_INSTALL}" = "1" ]; then
+            echo "Upgrade: instalacion previa detectada"
+            if [ "${THL_PRESERVE_EXISTING}" = "1" ]; then
+                echo "Preservacion: credenciales/configuracion conservadas"
+            fi
+        fi
         if [ "${ADMIN_PASSWORD_GENERATED}" = "1" ]; then
             echo "Admin password temporal: ${ADMIN_PASSWORD}"
             echo "Accion requerida: cambiar password en el primer ingreso."
@@ -670,51 +773,97 @@ setup_python_env() {
 write_env_file() {
     log "[6/11] Generando backend/.env..."
     local encryption_key
-    encryption_key="$("${APP_DIR}/venv/bin/python3" -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")"
+    local env_file_path="${APP_DIR}/backend/.env"
+    encryption_key="$(existing_env_value ENCRYPTION_KEY)"
+    if [ -z "${encryption_key}" ]; then
+        encryption_key="$("${APP_DIR}/venv/bin/python3" -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")"
+    fi
 
-    cat > "${APP_DIR}/backend/.env" <<ENVEOF
-DB_HOST=127.0.0.1
-DB_PORT=5433
-DB_NAME=postgres
-DB_USER=postgres
-DB_PASSWORD=${PG_PASSWORD}
-ADMIN_USERNAME=${ADMIN_USERNAME}
-ADMIN_PASSWORD=${ADMIN_PASSWORD}
-COOKIE_NAME=access_token
-PUBLIC_DB_HOST=${PUBLIC_DB_HOST}
-PUBLIC_DB_PORT=5432
-POOLING_ENABLED=true
-PGBOUNCER_HOST=127.0.0.1
-PGBOUNCER_PORT=6432
-POOL_MODE=transaction
-PGBOUNCER_MAX_CLIENT_CONN=2000
-PGBOUNCER_DEFAULT_POOL_SIZE=80
-PGBOUNCER_MIN_POOL_SIZE=20
-PGBOUNCER_RESERVE_POOL_SIZE=40
-PGBOUNCER_RESERVE_POOL_TIMEOUT_SEC=5
-SQL_PROXY_LISTEN_BACKLOG=4096
-PGBOUNCER_CLIENT_LOGIN_TIMEOUT_SEC=120
-PGBOUNCER_QUERY_WAIT_TIMEOUT_SEC=120
-PGBOUNCER_SERVER_LOGIN_RETRY_SEC=15
-HAPROXY_MAXCONN=4000
-HAPROXY_TIMEOUT_CONNECT=15s
-HAPROXY_TIMEOUT_CLIENT=5m
-HAPROXY_TIMEOUT_SERVER=5m
-HAPROXY_TIMEOUT_QUEUE=90s
-ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
-COOKIE_SECURE=${COOKIE_SECURE}
-CSRF_COOKIE_NAME=csrf_token
-CSRF_HEADER_NAME=x-csrf-token
-LOGIN_RATE_LIMIT=8
-LOGIN_RATE_WINDOW_SEC=300
-SESSION_TTL_SEC=86400
-TRUSTED_PROXY=true
-ALLOWED_PORTS=22,80,443,5432
-FIREWALL_BACKEND=auto
-ENCRYPTION_KEY=${encryption_key}
-ENVEOF
+    if [ "${EXISTING_INSTALL}" = "1" ] && [ "${THL_PRESERVE_EXISTING}" = "1" ] && [ -n "${EXISTING_ENV_BACKUP}" ] && [ -f "${EXISTING_ENV_BACKUP}" ]; then
+        cp "${EXISTING_ENV_BACKUP}" "${env_file_path}"
+        log "Se preserva configuracion existente de ${env_file_path}."
+    else
+        : > "${env_file_path}"
+    fi
 
-    chmod 600 "${APP_DIR}/backend/.env"
+    set_env_key "${env_file_path}" "DB_HOST" "127.0.0.1"
+    set_env_key "${env_file_path}" "DB_PORT" "5433"
+    set_env_key "${env_file_path}" "DB_NAME" "postgres"
+    set_env_key "${env_file_path}" "DB_USER" "postgres"
+    set_env_key "${env_file_path}" "DB_PASSWORD" "${PG_PASSWORD}"
+    set_env_key "${env_file_path}" "ADMIN_USERNAME" "${ADMIN_USERNAME}"
+    set_env_key "${env_file_path}" "ADMIN_PASSWORD" "${ADMIN_PASSWORD}"
+    set_env_key "${env_file_path}" "PUBLIC_DB_HOST" "${PUBLIC_DB_HOST}"
+    set_env_key "${env_file_path}" "ALLOWED_ORIGINS" "${ALLOWED_ORIGINS}"
+    set_env_key "${env_file_path}" "COOKIE_SECURE" "${COOKIE_SECURE}"
+
+    if [ "${EXISTING_INSTALL}" = "1" ] && [ "${THL_PRESERVE_EXISTING}" = "1" ]; then
+        ensure_env_key "${env_file_path}" "COOKIE_NAME" "access_token"
+        ensure_env_key "${env_file_path}" "PUBLIC_DB_PORT" "5432"
+        ensure_env_key "${env_file_path}" "POOLING_ENABLED" "true"
+        ensure_env_key "${env_file_path}" "PGBOUNCER_HOST" "127.0.0.1"
+        ensure_env_key "${env_file_path}" "PGBOUNCER_PORT" "6432"
+        ensure_env_key "${env_file_path}" "POOL_MODE" "transaction"
+        ensure_env_key "${env_file_path}" "PGBOUNCER_MAX_CLIENT_CONN" "2000"
+        ensure_env_key "${env_file_path}" "PGBOUNCER_DEFAULT_POOL_SIZE" "80"
+        ensure_env_key "${env_file_path}" "PGBOUNCER_MIN_POOL_SIZE" "20"
+        ensure_env_key "${env_file_path}" "PGBOUNCER_RESERVE_POOL_SIZE" "40"
+        ensure_env_key "${env_file_path}" "PGBOUNCER_RESERVE_POOL_TIMEOUT_SEC" "5"
+        ensure_env_key "${env_file_path}" "SQL_PROXY_LISTEN_BACKLOG" "4096"
+        ensure_env_key "${env_file_path}" "PGBOUNCER_CLIENT_LOGIN_TIMEOUT_SEC" "120"
+        ensure_env_key "${env_file_path}" "PGBOUNCER_QUERY_WAIT_TIMEOUT_SEC" "120"
+        ensure_env_key "${env_file_path}" "PGBOUNCER_SERVER_LOGIN_RETRY_SEC" "15"
+        ensure_env_key "${env_file_path}" "HAPROXY_MAXCONN" "4000"
+        ensure_env_key "${env_file_path}" "HAPROXY_TIMEOUT_CONNECT" "15s"
+        ensure_env_key "${env_file_path}" "HAPROXY_TIMEOUT_CLIENT" "5m"
+        ensure_env_key "${env_file_path}" "HAPROXY_TIMEOUT_SERVER" "5m"
+        ensure_env_key "${env_file_path}" "HAPROXY_TIMEOUT_QUEUE" "90s"
+        ensure_env_key "${env_file_path}" "CSRF_COOKIE_NAME" "csrf_token"
+        ensure_env_key "${env_file_path}" "CSRF_HEADER_NAME" "x-csrf-token"
+        ensure_env_key "${env_file_path}" "LOGIN_RATE_LIMIT" "8"
+        ensure_env_key "${env_file_path}" "LOGIN_RATE_WINDOW_SEC" "300"
+        ensure_env_key "${env_file_path}" "SESSION_TTL_SEC" "86400"
+        ensure_env_key "${env_file_path}" "TRUSTED_PROXY" "true"
+        ensure_env_key "${env_file_path}" "ALLOWED_PORTS" "22,80,443,5432"
+        ensure_env_key "${env_file_path}" "FIREWALL_BACKEND" "auto"
+        ensure_env_key "${env_file_path}" "ENCRYPTION_KEY" "${encryption_key}"
+    else
+        set_env_key "${env_file_path}" "COOKIE_NAME" "access_token"
+        set_env_key "${env_file_path}" "PUBLIC_DB_PORT" "5432"
+        set_env_key "${env_file_path}" "POOLING_ENABLED" "true"
+        set_env_key "${env_file_path}" "PGBOUNCER_HOST" "127.0.0.1"
+        set_env_key "${env_file_path}" "PGBOUNCER_PORT" "6432"
+        set_env_key "${env_file_path}" "POOL_MODE" "transaction"
+        set_env_key "${env_file_path}" "PGBOUNCER_MAX_CLIENT_CONN" "2000"
+        set_env_key "${env_file_path}" "PGBOUNCER_DEFAULT_POOL_SIZE" "80"
+        set_env_key "${env_file_path}" "PGBOUNCER_MIN_POOL_SIZE" "20"
+        set_env_key "${env_file_path}" "PGBOUNCER_RESERVE_POOL_SIZE" "40"
+        set_env_key "${env_file_path}" "PGBOUNCER_RESERVE_POOL_TIMEOUT_SEC" "5"
+        set_env_key "${env_file_path}" "SQL_PROXY_LISTEN_BACKLOG" "4096"
+        set_env_key "${env_file_path}" "PGBOUNCER_CLIENT_LOGIN_TIMEOUT_SEC" "120"
+        set_env_key "${env_file_path}" "PGBOUNCER_QUERY_WAIT_TIMEOUT_SEC" "120"
+        set_env_key "${env_file_path}" "PGBOUNCER_SERVER_LOGIN_RETRY_SEC" "15"
+        set_env_key "${env_file_path}" "HAPROXY_MAXCONN" "4000"
+        set_env_key "${env_file_path}" "HAPROXY_TIMEOUT_CONNECT" "15s"
+        set_env_key "${env_file_path}" "HAPROXY_TIMEOUT_CLIENT" "5m"
+        set_env_key "${env_file_path}" "HAPROXY_TIMEOUT_SERVER" "5m"
+        set_env_key "${env_file_path}" "HAPROXY_TIMEOUT_QUEUE" "90s"
+        set_env_key "${env_file_path}" "CSRF_COOKIE_NAME" "csrf_token"
+        set_env_key "${env_file_path}" "CSRF_HEADER_NAME" "x-csrf-token"
+        set_env_key "${env_file_path}" "LOGIN_RATE_LIMIT" "8"
+        set_env_key "${env_file_path}" "LOGIN_RATE_WINDOW_SEC" "300"
+        set_env_key "${env_file_path}" "SESSION_TTL_SEC" "86400"
+        set_env_key "${env_file_path}" "TRUSTED_PROXY" "true"
+        set_env_key "${env_file_path}" "ALLOWED_PORTS" "22,80,443,5432"
+        set_env_key "${env_file_path}" "FIREWALL_BACKEND" "auto"
+        set_env_key "${env_file_path}" "ENCRYPTION_KEY" "${encryption_key}"
+    fi
+
+    chmod 600 "${env_file_path}"
+    if [ -n "${EXISTING_ENV_BACKUP}" ] && [ -f "${EXISTING_ENV_BACKUP}" ]; then
+        rm -f "${EXISTING_ENV_BACKUP}" || true
+        EXISTING_ENV_BACKUP=""
+    fi
 }
 
 configure_sql_stack() {
@@ -860,6 +1009,12 @@ final_report() {
     echo -e "${GREEN}========================================${NC}"
     echo "Panel:          ${APP_URL}"
     echo "Usuario admin:  ${ADMIN_USERNAME}"
+    if [ "${EXISTING_INSTALL}" = "1" ]; then
+        echo "Upgrade:        instalacion previa detectada."
+        if [ "${THL_PRESERVE_EXISTING}" = "1" ]; then
+            echo "Preservacion:   credenciales/configuracion conservadas."
+        fi
+    fi
     if [ "${ADMIN_PASSWORD_GENERATED}" = "1" ]; then
         echo "Clave temporal: ${ADMIN_PASSWORD}"
         echo "Accion:         cambiar password en primer ingreso."
@@ -887,6 +1042,7 @@ main() {
     require_systemd
     detect_os
     ensure_repo_source
+    detect_existing_installation
     install_prerequisites
     collect_input
     show_summary
