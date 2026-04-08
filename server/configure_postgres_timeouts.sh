@@ -21,10 +21,10 @@ warn() {
 run_as_postgres() {
     local cmd="$1"
     if command -v runuser >/dev/null 2>&1; then
-        runuser -u postgres -- bash -lc "${cmd}"
+        runuser -u postgres -- sh -c "${cmd}"
         return
     fi
-    su -s /bin/bash postgres -c "${cmd}"
+    su -s /bin/sh postgres -c "${cmd}"
 }
 
 find_pg_hba() {
@@ -34,7 +34,7 @@ find_pg_hba() {
 detect_active_postgres_port() {
     local candidate
     for candidate in "${POSTGRES_INTERNAL_PORT}" "5432" "5433"; do
-        if run_as_postgres "psql -h 127.0.0.1 -p \"${candidate}\" -Atqc \"select 1\"" >/dev/null 2>&1; then
+        if run_as_postgres "psql -p \"${candidate}\" -Atqc \"select 1\"" >/dev/null 2>&1; then
             echo "${candidate}"
             return 0
         fi
@@ -55,11 +55,11 @@ wait_for_postgres_port() {
 
     for i in $(seq 1 "${retries}"); do
         if command -v pg_isready >/dev/null 2>&1; then
-            if run_as_postgres "pg_isready -h 127.0.0.1 -p \"${port}\"" >/dev/null 2>&1; then
+            if run_as_postgres "pg_isready -q -p \"${port}\"" >/dev/null 2>&1; then
                 return 0
             fi
         else
-            if run_as_postgres "psql -h 127.0.0.1 -p \"${port}\" -Atqc \"select 1\"" >/dev/null 2>&1; then
+            if run_as_postgres "psql -p \"${port}\" -Atqc \"select 1\"" >/dev/null 2>&1; then
                 return 0
             fi
         fi
@@ -72,13 +72,13 @@ wait_for_postgres_port() {
 run_psql_as_postgres() {
     local sql="$1"
     local port="$2"
-    run_as_postgres "psql -h 127.0.0.1 -p \"${port}\" -v ON_ERROR_STOP=1 -c \"${sql}\"" >/dev/null
+    run_as_postgres "psql -p \"${port}\" -v ON_ERROR_STOP=1 -c \"${sql}\"" >/dev/null
 }
 
 show_setting_or_na() {
     local field="$1"
     local value
-    if value="$(run_as_postgres "psql -h 127.0.0.1 -p \"${POSTGRES_INTERNAL_PORT}\" -Atqc \"show ${field};\"" 2>/dev/null)"; then
+    if value="$(run_as_postgres "psql -p \"${POSTGRES_INTERNAL_PORT}\" -Atqc \"show ${field};\"" 2>/dev/null)"; then
         echo "${field}=${value}"
         return
     fi

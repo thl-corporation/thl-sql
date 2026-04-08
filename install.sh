@@ -209,16 +209,16 @@ detect_existing_installation() {
 run_as_postgres() {
     local cmd="$1"
     if command -v runuser >/dev/null 2>&1; then
-        runuser -u postgres -- bash -lc "${cmd}"
+        runuser -u postgres -- sh -c "${cmd}"
         return
     fi
-    su -s /bin/bash postgres -c "${cmd}"
+    su -s /bin/sh postgres -c "${cmd}"
 }
 
 detect_active_postgres_port() {
     local candidate
     for candidate in 5432 5433; do
-        if run_as_postgres "psql -h 127.0.0.1 -p \"${candidate}\" -Atqc \"select 1\"" >/dev/null 2>&1; then
+        if run_as_postgres "psql -p \"${candidate}\" -Atqc \"select 1\"" >/dev/null 2>&1; then
             echo "${candidate}"
             return 0
         fi
@@ -957,7 +957,7 @@ configure_postgres_service() {
 
     local pg_password_sql
     pg_password_sql="${PG_PASSWORD//\'/\'\'}"
-    run_as_postgres "psql -h 127.0.0.1 -p \"${pg_port}\" -v ON_ERROR_STOP=1 -c \"ALTER USER postgres WITH PASSWORD '${pg_password_sql}';\"" >/dev/null
+    run_as_postgres "psql -p \"${pg_port}\" -v ON_ERROR_STOP=1 -c \"ALTER USER postgres WITH PASSWORD '${pg_password_sql}';\"" >/dev/null
 
     local pg_conf pg_hba pg_hba_include
     pg_conf="$(find /etc/postgresql /var/lib/pgsql -name postgresql.conf 2>/dev/null | head -1 || true)"
