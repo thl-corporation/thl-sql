@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -10,6 +10,10 @@ NC='\033[0m'
 APP_DIR="${APP_DIR:-/var/www/pg_manager}"
 THL_REPO_URL="${THL_REPO_URL:-https://github.com/thl-corporation/thl-sql.git}"
 BOOTSTRAP_DIR="${BOOTSTRAP_DIR:-/opt/thl-sql-installer}"
+THL_INSTALL_DEBUG="${THL_INSTALL_DEBUG:-0}"
+THL_INSTALL_LOG_FILE="${THL_INSTALL_LOG_FILE:-/var/log/thl-sql-install.log}"
+THL_SYSTEM_UPGRADE_POLICY="${THL_SYSTEM_UPGRADE_POLICY:-full}"
+THL_INSTALL_LOG_INITIALIZED="${THL_INSTALL_LOG_INITIALIZED:-0}"
 FIREWALL_BACKEND=""
 OS_FAMILY=""
 PKG_TOOL=""
@@ -28,6 +32,20 @@ die() {
     exit 1
 }
 
+on_error() {
+    local exit_code="$?"
+    local line_no="${BASH_LINENO[0]:-unknown}"
+    local failed_command="${BASH_COMMAND:-unknown}"
+
+    echo -e "${RED}Error: fallo en linea ${line_no} (exit ${exit_code}): ${failed_command}${NC}" >&2
+    if [ -n "${THL_INSTALL_LOG_FILE:-}" ]; then
+        echo -e "${YELLOW}Log: ${THL_INSTALL_LOG_FILE}${NC}" >&2
+    fi
+    exit "${exit_code}"
+}
+
+trap 'on_error' ERR
+
 require_root() {
     if [ "$(id -u)" -ne 0 ]; then
         die "Error: ejecuta este script como root."
@@ -37,6 +55,44 @@ require_root() {
 require_systemd() {
     if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
         die "Error: este instalador requiere systemd."
+    fi
+}
+
+validate_install_settings() {
+    case "${THL_INSTALL_DEBUG}" in
+        0|1) ;;
+        *)
+            die "Valor invalido THL_INSTALL_DEBUG=${THL_INSTALL_DEBUG}. Usa 0 o 1."
+            ;;
+    esac
+
+    case "${THL_SYSTEM_UPGRADE_POLICY}" in
+        none|upgrade|full) ;;
+        *)
+            die "Valor invalido THL_SYSTEM_UPGRADE_POLICY=${THL_SYSTEM_UPGRADE_POLICY}. Usa none, upgrade o full."
+            ;;
+    esac
+}
+
+init_install_logging() {
+    if [ "${THL_INSTALL_LOG_INITIALIZED}" = "1" ]; then
+        if [ "${THL_INSTALL_DEBUG}" = "1" ]; then
+            set -x
+        fi
+        return
+    fi
+
+    mkdir -p "$(dirname "${THL_INSTALL_LOG_FILE}")"
+    touch "${THL_INSTALL_LOG_FILE}"
+    chmod 600 "${THL_INSTALL_LOG_FILE}" || true
+
+    exec > >(tee -a "${THL_INSTALL_LOG_FILE}") 2>&1
+    export THL_INSTALL_LOG_INITIALIZED=1
+
+    log "Log de instalacion: ${THL_INSTALL_LOG_FILE}"
+    if [ "${THL_INSTALL_DEBUG}" = "1" ]; then
+        log "Modo debug habilitado (THL_INSTALL_DEBUG=1)."
+        set -x
     fi
 }
 
@@ -71,31 +127,126 @@ detect_os() {
     die "Distribucion no soportada: ID=${os_name} ID_LIKE=${os_like}"
 }
 
+run_with_retry() {
+    local retries="$1"
+    shift
+
+    local attempt=1
+    local rc=0
+    while true; do
+        if "$@"; then
+            return 0
+        fi
+
+        rc=$?
+        if [ "${attempt}" -ge "${retries}" ]; then
+            return "${rc}"
+        fi
+
+        warn "Intento ${attempt}/${retries} fallo (rc=${rc}). Reintentando..."
+        sleep $((attempt * 2))
+        attempt=$((attempt + 1))
+    done
+}
+
+apt_recover() {
+    warn "Intentando recuperar estado de APT/DPKG..."
+    dpkg --configure -a || true
+    apt-get install -f -y || true
+    apt --fix-broken install -y || true
+}
+
 pkg_update() {
     if [ "${PKG_TOOL}" = "apt" ]; then
-        apt-get update -qq
+        run_with_retry 3 apt-get update
         return
     fi
     if [ "${PKG_TOOL}" = "dnf" ]; then
-        dnf -y makecache >/dev/null
+        run_with_retry 2 dnf -y makecache
         return
     fi
-    yum -y makecache >/dev/null
+    run_with_retry 2 yum -y makecache
 }
 
-pkg_install() {
+pkg_upgrade_system() {
+    if [ "${THL_SYSTEM_UPGRADE_POLICY}" = "none" ]; then
+        log "Politica de upgrade del sistema: none (omitido)."
+        return
+    fi
+
+    if [ "${PKG_TOOL}" = "apt" ]; then
+        local apt_upgrade_cmd="upgrade"
+        if [ "${THL_SYSTEM_UPGRADE_POLICY}" = "full" ]; then
+            apt_upgrade_cmd="full-upgrade"
+        fi
+        log "Aplicando ${apt_upgrade_cmd} del sistema..."
+        run_with_retry 2 env DEBIAN_FRONTEND=noninteractive apt-get "${apt_upgrade_cmd}" -y
+        return
+    fi
+
+    if [ "${PKG_TOOL}" = "dnf" ]; then
+        log "Aplicando upgrade del sistema con dnf..."
+        run_with_retry 2 dnf upgrade -y
+        return
+    fi
+
+    log "Aplicando upgrade del sistema con yum..."
+    run_with_retry 2 yum update -y
+}
+
+pkg_install_critical() {
     if [ "$#" -eq 0 ]; then
         return
     fi
+
     if [ "${PKG_TOOL}" = "apt" ]; then
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@"
+        if run_with_retry 2 env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"; then
+            return
+        fi
+
+        warn "Fallo instalacion critica con APT. Ejecutando recuperacion..."
+        apt_recover
+        if run_with_retry 1 env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"; then
+            return
+        fi
+
+        die "No se pudieron instalar paquetes criticos: $*"
         return
     fi
+
     if [ "${PKG_TOOL}" = "dnf" ]; then
-        dnf install -y "$@" >/dev/null
+        run_with_retry 2 dnf install -y "$@" || die "No se pudieron instalar paquetes criticos: $*"
         return
     fi
-    yum install -y "$@" >/dev/null
+
+    run_with_retry 2 yum install -y "$@" || die "No se pudieron instalar paquetes criticos: $*"
+}
+
+pkg_install_optional() {
+    if [ "$#" -eq 0 ]; then
+        return
+    fi
+
+    if [ "${PKG_TOOL}" = "apt" ]; then
+        run_with_retry 2 env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" || {
+            warn "No se pudieron instalar paquetes opcionales: $*"
+            return 1
+        }
+        return
+    fi
+
+    if [ "${PKG_TOOL}" = "dnf" ]; then
+        run_with_retry 2 dnf install -y "$@" || {
+            warn "No se pudieron instalar paquetes opcionales: $*"
+            return 1
+        }
+        return
+    fi
+
+    run_with_retry 2 yum install -y "$@" || {
+        warn "No se pudieron instalar paquetes opcionales: $*"
+        return 1
+    }
 }
 
 enable_service_if_exists() {
@@ -108,23 +259,130 @@ enable_service_if_exists() {
 install_prerequisites() {
     log "[1/11] Instalando dependencias del sistema..."
     pkg_update
+    pkg_upgrade_system
 
     if [ "${OS_FAMILY}" = "debian" ]; then
-        pkg_install ca-certificates curl git openssl python3 python3-venv python3-pip \
-            nginx postgresql postgresql-contrib pgbouncer haproxy ufw certbot \
-            python3-certbot-nginx cron
+        pkg_install_critical bash ca-certificates curl git tar sudo openssl python3 python3-venv python3-pip \
+            nginx postgresql postgresql-contrib pgbouncer haproxy ufw cron
+
+        pkg_install_optional gnupg lsb-release software-properties-common || true
     else
         if [ "${PKG_TOOL}" = "dnf" ]; then
             dnf install -y epel-release >/dev/null 2>&1 || true
         fi
-        pkg_install ca-certificates curl git openssl python3 python3-pip python3-virtualenv \
+        pkg_install_critical bash ca-certificates curl git tar sudo openssl python3 python3-pip python3-virtualenv \
             nginx postgresql-server postgresql-contrib pgbouncer haproxy firewalld \
-            certbot python3-certbot-nginx cronie
+            cronie
     fi
 
     enable_service_if_exists nginx
     enable_service_if_exists crond
     enable_service_if_exists cron
+}
+
+install_bootstrap_tools() {
+    log "[bootstrap] Instalando herramientas base para one-link..."
+    pkg_update
+
+    if [ "${OS_FAMILY}" = "debian" ]; then
+        pkg_install_critical bash ca-certificates curl git tar sudo
+        return
+    fi
+
+    if [ "${PKG_TOOL}" = "dnf" ]; then
+        dnf install -y epel-release >/dev/null 2>&1 || true
+    fi
+    pkg_install_critical bash ca-certificates curl git tar sudo
+}
+
+validate_safe_bootstrap_dir() {
+    local target="$1"
+
+    [ -n "${target}" ] || die "BOOTSTRAP_DIR no puede ser vacio."
+    [[ "${target}" = /* ]] || die "BOOTSTRAP_DIR debe ser ruta absoluta: ${target}"
+
+    case "${target}" in
+        "/"|"/root"|"/home"|"/opt"|"/tmp"|"/var"|"/usr"|"/etc")
+            die "BOOTSTRAP_DIR inseguro para operaciones destructivas: ${target}"
+            ;;
+    esac
+
+    if [[ "${target}" != *thl-sql* ]]; then
+        die "BOOTSTRAP_DIR debe contener 'thl-sql' por seguridad: ${target}"
+    fi
+}
+
+safe_reset_bootstrap_dir() {
+    validate_safe_bootstrap_dir "${BOOTSTRAP_DIR}"
+    if [ -e "${BOOTSTRAP_DIR}" ]; then
+        rm -rf "${BOOTSTRAP_DIR}"
+    fi
+}
+
+repo_slug_from_url() {
+    local repo_url="$1"
+    repo_url="${repo_url%.git}"
+
+    if [[ "${repo_url}" =~ github\.com[:/]([^/]+/[^/]+)$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+        return 0
+    fi
+
+    return 1
+}
+
+download_repo_tarball_fallback() {
+    local repo_slug
+    repo_slug="$(repo_slug_from_url "${THL_REPO_URL}")" || return 1
+
+    local tarball_url="https://codeload.github.com/${repo_slug}/tar.gz/refs/heads/main"
+    local tmp_tar tmp_dir extracted_dir
+    tmp_tar="$(mktemp /tmp/thl-sql-bootstrap.XXXXXX.tar.gz)"
+    tmp_dir="$(mktemp -d /tmp/thl-sql-bootstrap.XXXXXX)"
+
+    if ! run_with_retry 2 curl -fL --connect-timeout 10 "${tarball_url}" -o "${tmp_tar}"; then
+        rm -f "${tmp_tar}" || true
+        rm -rf "${tmp_dir}" || true
+        return 1
+    fi
+
+    tar -xzf "${tmp_tar}" -C "${tmp_dir}"
+    extracted_dir="$(find "${tmp_dir}" -mindepth 1 -maxdepth 1 -type d | head -1 || true)"
+    [ -n "${extracted_dir}" ] || die "No se pudo extraer el tarball del repositorio."
+
+    mv "${extracted_dir}" "${BOOTSTRAP_DIR}"
+    rm -f "${tmp_tar}" || true
+    rm -rf "${tmp_dir}" || true
+}
+
+sync_bootstrap_repo() {
+    validate_safe_bootstrap_dir "${BOOTSTRAP_DIR}"
+    mkdir -p "$(dirname "${BOOTSTRAP_DIR}")"
+
+    if [ -d "${BOOTSTRAP_DIR}/.git" ]; then
+        if run_with_retry 2 git -C "${BOOTSTRAP_DIR}" fetch --depth 1 origin main && \
+            git -C "${BOOTSTRAP_DIR}" checkout -f main && \
+            git -C "${BOOTSTRAP_DIR}" reset --hard origin/main; then
+            return
+        fi
+
+        warn "No se pudo actualizar bootstrap por git fetch. Se intentara descarga limpia."
+        safe_reset_bootstrap_dir
+    else
+        safe_reset_bootstrap_dir
+    fi
+
+    if run_with_retry 2 git clone --depth 1 "${THL_REPO_URL}" "${BOOTSTRAP_DIR}"; then
+        return
+    fi
+
+    warn "git clone fallo. Intentando fallback por tarball de GitHub..."
+    safe_reset_bootstrap_dir
+    if download_repo_tarball_fallback; then
+        return
+    fi
+
+    die "No se pudo descargar el repositorio (${THL_REPO_URL}) por git ni por tarball."
 }
 
 ensure_repo_source() {
@@ -136,15 +394,10 @@ ensure_repo_source() {
     fi
 
     log "Instalacion en modo one-link detectada. Descargando repo ${THL_REPO_URL}..."
-    mkdir -p "$(dirname "${BOOTSTRAP_DIR}")"
-    if [ -d "${BOOTSTRAP_DIR}/.git" ]; then
-        git -C "${BOOTSTRAP_DIR}" fetch --depth 1 origin main
-        git -C "${BOOTSTRAP_DIR}" checkout -f main
-        git -C "${BOOTSTRAP_DIR}" reset --hard origin/main
-    else
-        rm -rf "${BOOTSTRAP_DIR}"
-        git clone --depth 1 "${THL_REPO_URL}" "${BOOTSTRAP_DIR}"
-    fi
+    install_bootstrap_tools
+    sync_bootstrap_repo
+
+    [ -f "${BOOTSTRAP_DIR}/install.sh" ] || die "No se encontro install.sh en ${BOOTSTRAP_DIR}."
 
     export THL_REPO_URL
     export THL_DOMAIN="${THL_DOMAIN:-}"
@@ -154,6 +407,10 @@ ensure_repo_source() {
     export THL_ADMIN_PASS="${THL_ADMIN_PASS:-}"
     export THL_PG_PASSWORD="${THL_PG_PASSWORD:-}"
     export THL_NONINTERACTIVE="${THL_NONINTERACTIVE:-}"
+    export THL_INSTALL_DEBUG
+    export THL_INSTALL_LOG_FILE
+    export THL_SYSTEM_UPGRADE_POLICY
+    export THL_INSTALL_LOG_INITIALIZED
 
     exec bash "${BOOTSTRAP_DIR}/install.sh"
 }
@@ -339,8 +596,8 @@ deploy_app() {
 setup_python_env() {
     log "[5/11] Instalando dependencias Python..."
     python3 -m venv "${APP_DIR}/venv"
-    "${APP_DIR}/venv/bin/pip" install --upgrade pip >/dev/null
-    "${APP_DIR}/venv/bin/pip" install -q -r "${APP_DIR}/backend/requirements.txt"
+    "${APP_DIR}/venv/bin/pip" install --upgrade pip
+    "${APP_DIR}/venv/bin/pip" install -r "${APP_DIR}/backend/requirements.txt"
 }
 
 write_env_file() {
@@ -453,16 +710,16 @@ NGEOF
         nginx -t
         systemctl reload nginx
 
-        if [ "${PKG_TOOL}" = "apt" ]; then
-            pkg_install certbot python3-certbot-nginx
-        else
-            pkg_install certbot python3-certbot-nginx || true
-        fi
+        pkg_install_optional certbot python3-certbot-nginx || true
 
-        certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos \
-            --register-unsafely-without-email --redirect || {
-            warn "Certbot fallo. Verifica DNS de ${DOMAIN} y reintenta manualmente."
-        }
+        if command -v certbot >/dev/null 2>&1; then
+            certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos \
+                --register-unsafely-without-email --redirect || {
+                warn "Certbot fallo. Verifica DNS de ${DOMAIN} y reintenta manualmente."
+            }
+        else
+            warn "Certbot no esta disponible. Se omite TLS automatico."
+        fi
     else
         cat > "${NGINX_CONF_FILE}" <<NGEOF
 server {
@@ -548,11 +805,13 @@ main() {
     echo -e "${CYAN}  THL SQL - Instalador Multi-Distro${NC}"
     echo -e "${CYAN}========================================${NC}"
 
+    validate_install_settings
     require_root
+    init_install_logging
     require_systemd
     detect_os
-    install_prerequisites
     ensure_repo_source
+    install_prerequisites
     collect_input
     show_summary
     configure_dns

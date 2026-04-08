@@ -11,6 +11,16 @@ Este proyecto soporta instalacion automatica en:
 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
 ```
 
+## Metodo alternativo (fallback en 3 pasos)
+
+Si quieres ver mejor los errores en consola:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh -o install.sh
+chmod +x install.sh
+./install.sh
+```
+
 El instalador pedira:
 
 1. Usuario admin
@@ -38,6 +48,38 @@ Variables:
 - `THL_ADMIN_PASS`
 - `THL_PG_PASSWORD` (opcional)
 - `THL_NONINTERACTIVE=1` (opcional)
+- `THL_INSTALL_DEBUG=1` (opcional, activa `set -x`)
+- `THL_INSTALL_LOG_FILE=/var/log/thl-sql-install.log` (opcional)
+- `THL_SYSTEM_UPGRADE_POLICY=none|upgrade|full` (opcional, default `full`)
+
+## VPS Ubuntu vacio: preflight recomendado
+
+```bash
+id -u
+systemctl --version
+```
+
+El instalador ya incluye:
+
+- Bootstrap minimo para modo one-link (`bash`, `curl`, `ca-certificates`, `git`, `tar`, `sudo`).
+- Reintentos y recuperacion APT (`dpkg --configure -a`, `apt --fix-broken install -y`).
+- Logging persistente en `/var/log/thl-sql-install.log`.
+
+## Troubleshooting de `[1/11] Instalando dependencias`
+
+Ejecuta en modo debug:
+
+```bash
+THL_INSTALL_DEBUG=1 \
+THL_INSTALL_LOG_FILE=/var/log/thl-sql-install.log \
+curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
+
+Luego revisa:
+
+```bash
+tail -n 120 /var/log/thl-sql-install.log
+```
 
 ## Resultado esperado
 

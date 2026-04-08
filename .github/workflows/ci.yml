@@ -29,6 +29,21 @@ jobs:
           bash -n server/configure_sql_proxy.sh
           bash -n server/run_test_suite.sh
 
+      - name: Shell quality checks
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck -S error install.sh
+            shellcheck -S error deploy_remote.sh
+            shellcheck -S error setup_dns.sh
+            shellcheck -S error setup_postgres.sh
+            shellcheck -S error server/check_repo_safety.sh
+            shellcheck -S error server/configure_postgres_timeouts.sh
+            shellcheck -S error server/configure_sql_proxy.sh
+            shellcheck -S error server/run_test_suite.sh
+          else
+            echo "shellcheck no disponible en el runner; se omite lint de shell."
+          fi
+
       - name: Repository safety check
         run: bash server/check_repo_safety.sh
 

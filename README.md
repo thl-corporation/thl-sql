@@ -26,6 +26,14 @@ Operational architecture:
 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
 ```
 
+Fallback (manual execution with the same installer):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh -o install.sh
+chmod +x install.sh
+./install.sh
+```
+
 Supported families:
 
 - Debian / Ubuntu
@@ -40,6 +48,9 @@ Supported families:
 - `THL_ADMIN_PASS`
 - `THL_PG_PASSWORD`
 - `THL_NONINTERACTIVE=1`
+- `THL_INSTALL_DEBUG=1` (enables `set -x`)
+- `THL_INSTALL_LOG_FILE=/var/log/thl-sql-install.log`
+- `THL_SYSTEM_UPGRADE_POLICY=none|upgrade|full` (default: `full`)
 
 Non-interactive example:
 
@@ -48,6 +59,30 @@ THL_ADMIN_USER=admin \
 THL_ADMIN_PASS='change_me' \
 THL_DOMAIN=sql.example.com \
 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
+
+## Ubuntu Empty VPS Notes
+
+Recommended preflight:
+
+```bash
+id -u
+systemctl --version
+```
+
+If the installer stops at `[1/11]`, re-run in debug mode and inspect the log:
+
+```bash
+THL_INSTALL_DEBUG=1 \
+THL_INSTALL_LOG_FILE=/var/log/thl-sql-install.log \
+curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
+
+Quick diagnostics:
+
+```bash
+tail -n 120 /var/log/thl-sql-install.log
+journalctl -u pg_manager -n 80 --no-pager
 ```
 
 ## Technical Validation
