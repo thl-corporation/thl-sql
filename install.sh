@@ -206,6 +206,62 @@ detect_existing_installation() {
     fi
 }
 
+run_as_postgres() {
+    local cmd="$1"
+    if command -v runuser >/dev/null 2>&1; then
+        runuser -u postgres -- bash -lc "${cmd}"
+        return
+    fi
+    su -s /bin/bash postgres -c "${cmd}"
+}
+
+detect_active_postgres_port() {
+    local candidate
+    for candidate in 5432 5433; do
+        if run_as_postgres "psql -h 127.0.0.1 -p \"${candidate}\" -Atqc \"select 1\"" >/dev/null 2>&1; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+
+    if run_as_postgres "psql -Atqc \"show port\"" >/dev/null 2>&1; then
+        run_as_postgres "psql -Atqc \"show port\"" | head -1
+        return 0
+    fi
+
+    return 1
+}
+
+ensure_debian_postgres_cluster() {
+    if [ "${OS_FAMILY}" != "debian" ]; then
+        return
+    fi
+
+    if ! command -v pg_lsclusters >/dev/null 2>&1 || ! command -v pg_createcluster >/dev/null 2>&1; then
+        return
+    fi
+
+    local cluster_count
+    cluster_count="$(pg_lsclusters --no-header 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "${cluster_count}" = "0" ]; then
+        local pg_major
+        pg_major="$(psql --version 2>/dev/null | sed -n 's/^psql (PostgreSQL) \([0-9][0-9]*\).*/\1/p' | head -1 || true)"
+        if [ -z "${pg_major}" ] && [ -d /usr/lib/postgresql ]; then
+            pg_major="$(ls -1 /usr/lib/postgresql | sort -V | tail -1 || true)"
+        fi
+        if [ -n "${pg_major}" ]; then
+            log "No hay cluster PostgreSQL en Debian. Creando cluster ${pg_major}/main..."
+            pg_createcluster "${pg_major}" main --start || true
+        fi
+    fi
+
+    while read -r ver name port status owner data logf; do
+        if [ "${status}" != "online" ] && [ -n "${ver}" ] && [ -n "${name}" ]; then
+            pg_ctlcluster "${ver}" "${name}" start || true
+        fi
+    done < <(pg_lsclusters --no-header 2>/dev/null || true)
+}
+
 disable_service_if_exists() {
     local svc="$1"
     if systemctl list-unit-files | grep -q "^${svc}\.service"; then
@@ -881,6 +937,7 @@ configure_dns() {
 
 configure_postgres_service() {
     log "[3/11] Configurando PostgreSQL..."
+    local pg_port
 
     if [ "${OS_FAMILY}" = "rhel" ] && [ ! -f /var/lib/pgsql/data/PG_VERSION ]; then
         if command -v postgresql-setup >/dev/null 2>&1; then
@@ -888,11 +945,19 @@ configure_postgres_service() {
         fi
     fi
 
+    ensure_debian_postgres_cluster
     systemctl enable --now postgresql >/dev/null 2>&1 || systemctl restart postgresql
+    ensure_debian_postgres_cluster
+
+    pg_port="$(detect_active_postgres_port || true)"
+    if [ -z "${pg_port}" ]; then
+        journalctl -u postgresql --no-pager -n 80 || true
+        die "PostgreSQL no quedo accesible tras el arranque inicial."
+    fi
 
     local pg_password_sql
     pg_password_sql="${PG_PASSWORD//\'/\'\'}"
-    su - postgres -c "psql -v ON_ERROR_STOP=1 -c \"ALTER USER postgres WITH PASSWORD '${pg_password_sql}';\"" >/dev/null
+    run_as_postgres "psql -h 127.0.0.1 -p \"${pg_port}\" -v ON_ERROR_STOP=1 -c \"ALTER USER postgres WITH PASSWORD '${pg_password_sql}';\"" >/dev/null
 
     local pg_conf pg_hba pg_hba_include
     pg_conf="$(find /etc/postgresql /var/lib/pgsql -name postgresql.conf 2>/dev/null | head -1 || true)"
