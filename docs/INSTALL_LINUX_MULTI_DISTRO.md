@@ -64,6 +64,8 @@ El instalador ya incluye:
 - Bootstrap minimo para modo one-link (`bash`, `curl`, `ca-certificates`, `git`, `tar`, `sudo`).
 - Reintentos y recuperacion APT (`dpkg --configure -a`, `apt --fix-broken install -y`).
 - Logging persistente en `/var/log/thl-sql-install.log`.
+- Si no hay TTY disponible, cambia automaticamente a modo no interactivo.
+- En modo no interactivo sin `THL_ADMIN_PASS`, genera password admin aleatorio y lo guarda en `/var/www/pg_manager/backend/.env`.
 
 ## Troubleshooting de `[1/11] Instalando dependencias`
 

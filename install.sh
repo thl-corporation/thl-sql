@@ -96,6 +96,10 @@ init_install_logging() {
     fi
 }
 
+has_tty() {
+    [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
 detect_os() {
     if [ ! -f /etc/os-release ]; then
         die "No se pudo detectar la distribucion (falta /etc/os-release)."
@@ -416,38 +420,54 @@ ensure_repo_source() {
 }
 
 collect_input() {
+    local interactive_mode=1
     SERVER_IP="$(curl -fsS --max-time 5 https://ifconfig.me || hostname -I | awk '{print $1}')"
     if [ -z "${SERVER_IP}" ]; then
         SERVER_IP="127.0.0.1"
     fi
 
+    if [ "${THL_NONINTERACTIVE:-0}" = "1" ]; then
+        interactive_mode=0
+    elif ! has_tty; then
+        warn "No hay TTY disponible para prompts. Se activa THL_NONINTERACTIVE=1."
+        THL_NONINTERACTIVE=1
+        interactive_mode=0
+    fi
+
     ADMIN_USERNAME="${THL_ADMIN_USER:-}"
     if [ -z "${ADMIN_USERNAME}" ]; then
-        read -r -p "Usuario administrador [admin]: " ADMIN_USERNAME
+        if [ "${interactive_mode}" = "1" ]; then
+            read -r -p "Usuario administrador [admin]: " ADMIN_USERNAME < /dev/tty
+        fi
         ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
     fi
 
     ADMIN_PASSWORD="${THL_ADMIN_PASS:-}"
     if [ -z "${ADMIN_PASSWORD}" ]; then
-        while true; do
-            read -r -s -p "Contrasena administrador: " ADMIN_PASSWORD
-            echo ""
-            [ -n "${ADMIN_PASSWORD}" ] || { warn "La contrasena no puede estar vacia."; continue; }
-            read -r -s -p "Confirmar contrasena: " ADMIN_PASSWORD_CONFIRM
-            echo ""
-            if [ "${ADMIN_PASSWORD}" != "${ADMIN_PASSWORD_CONFIRM}" ]; then
-                warn "Las contrasenas no coinciden."
-                continue
-            fi
-            break
-        done
+        if [ "${interactive_mode}" = "1" ]; then
+            while true; do
+                read -r -s -p "Contrasena administrador: " ADMIN_PASSWORD < /dev/tty
+                echo ""
+                [ -n "${ADMIN_PASSWORD}" ] || { warn "La contrasena no puede estar vacia."; continue; }
+                read -r -s -p "Confirmar contrasena: " ADMIN_PASSWORD_CONFIRM < /dev/tty
+                echo ""
+                if [ "${ADMIN_PASSWORD}" != "${ADMIN_PASSWORD_CONFIRM}" ]; then
+                    warn "Las contrasenas no coinciden."
+                    continue
+                fi
+                break
+            done
+        else
+            ADMIN_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=')"
+            warn "THL_ADMIN_PASS no definido en modo no interactivo. Se genero password admin aleatorio."
+        fi
     fi
 
     DOMAIN="${THL_DOMAIN:-}"
-    if [ -z "${DOMAIN}" ] && [ "${THL_NONINTERACTIVE:-0}" != "1" ]; then
+    if [ -z "${DOMAIN}" ] && [ "${interactive_mode}" = "1" ]; then
         echo ""
         echo "Si tienes dominio, ingresalo. Si no, deja vacio y se usa IP:puerto."
-        read -r -p "Dominio (ej: sql.midominio.com) [vacio para IP]: " DOMAIN
+        read -r -p "Dominio (ej: sql.midominio.com) [vacio para IP]: " DOMAIN < /dev/tty
     fi
 
     WEB_PORT="${THL_PORT:-}"
@@ -461,10 +481,10 @@ collect_input() {
     else
         USE_DOMAIN="false"
         if [ -z "${WEB_PORT}" ]; then
-            if [ "${THL_NONINTERACTIVE:-0}" = "1" ]; then
+            if [ "${interactive_mode}" = "0" ]; then
                 WEB_PORT="80"
             else
-                read -r -p "Puerto para panel web [80]: " WEB_PORT
+                read -r -p "Puerto para panel web [80]: " WEB_PORT < /dev/tty
                 WEB_PORT="${WEB_PORT:-80}"
             fi
         fi
@@ -495,11 +515,11 @@ show_summary() {
     echo -e "${CYAN}========================================${NC}"
     echo ""
 
-    if [ "${THL_NONINTERACTIVE:-0}" = "1" ]; then
+    if [ "${THL_NONINTERACTIVE:-0}" = "1" ] || ! has_tty; then
         return
     fi
 
-    read -r -p "Continuar con la instalacion? [S/n]: " CONFIRM
+    read -r -p "Continuar con la instalacion? [S/n]: " CONFIRM < /dev/tty
     CONFIRM="${CONFIRM:-S}"
     if [[ ! "${CONFIRM}" =~ ^[SsYy]$ ]]; then
         die "Instalacion cancelada."
