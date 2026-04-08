@@ -21,7 +21,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-El instalador pedira:
+Si desactivas UX (`THL_UX_MODE=0`), el instalador pedira:
 
 1. Usuario admin
 2. Password admin
@@ -51,6 +51,21 @@ Variables:
 - `THL_INSTALL_DEBUG=1` (opcional, activa `set -x`)
 - `THL_INSTALL_LOG_FILE=/var/log/thl-sql-install.log` (opcional)
 - `THL_SYSTEM_UPGRADE_POLICY=none|upgrade|full` (opcional, default `full`)
+- `THL_UX_MODE=1` (opcional, default: menos prompts)
+
+## UX recomendado con dominio
+
+```bash
+THL_DOMAIN=sql.example.com \
+THL_ADMIN_USER=admin \
+THL_ADMIN_PASS='Change_This_Immediately_123!' \
+curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
+
+Comportamiento:
+
+- Si `THL_DOMAIN` viene definido, usa flujo HTTPS (certbot).
+- Si `THL_DOMAIN` no viene definido, usa modo IP:puerto.
 
 ## VPS Ubuntu vacio: preflight recomendado
 

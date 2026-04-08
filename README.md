@@ -51,6 +51,16 @@ Supported families:
 - `THL_INSTALL_DEBUG=1` (enables `set -x`)
 - `THL_INSTALL_LOG_FILE=/var/log/thl-sql-install.log`
 - `THL_SYSTEM_UPGRADE_POLICY=none|upgrade|full` (default: `full`)
+- `THL_UX_MODE=1` (default, minimal prompts)
+
+UX one-command with domain (recommended for production):
+
+```bash
+THL_DOMAIN=sql.example.com \
+THL_ADMIN_USER=admin \
+THL_ADMIN_PASS='Change_This_Immediately_123!' \
+curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
 
 Non-interactive example:
 
@@ -84,6 +94,11 @@ Quick diagnostics:
 tail -n 120 /var/log/thl-sql-install.log
 journalctl -u pg_manager -n 80 --no-pager
 ```
+
+Domain note:
+
+- If `THL_DOMAIN` is set, installer uses HTTPS flow with certbot.
+- If `THL_DOMAIN` is empty, installer uses IP mode (`http://IP:PORT`).
 
 ## Technical Validation
 

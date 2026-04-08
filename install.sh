@@ -14,10 +14,14 @@ THL_INSTALL_DEBUG="${THL_INSTALL_DEBUG:-0}"
 THL_INSTALL_LOG_FILE="${THL_INSTALL_LOG_FILE:-/var/log/thl-sql-install.log}"
 THL_SYSTEM_UPGRADE_POLICY="${THL_SYSTEM_UPGRADE_POLICY:-full}"
 THL_INSTALL_LOG_INITIALIZED="${THL_INSTALL_LOG_INITIALIZED:-0}"
+THL_UX_MODE="${THL_UX_MODE:-1}"
+THL_INSTALL_SUMMARY_FILE="${THL_INSTALL_SUMMARY_FILE:-/root/thl-sql-install-summary.txt}"
 FIREWALL_BACKEND=""
 OS_FAMILY=""
 PKG_TOOL=""
 NGINX_CONF_FILE="/etc/nginx/conf.d/pg_manager.conf"
+ADMIN_PASSWORD_GENERATED="0"
+UX_MODE_ACTIVE="0"
 
 log() {
     echo -e "${CYAN}$*${NC}"
@@ -70,6 +74,13 @@ validate_install_settings() {
         none|upgrade|full) ;;
         *)
             die "Valor invalido THL_SYSTEM_UPGRADE_POLICY=${THL_SYSTEM_UPGRADE_POLICY}. Usa none, upgrade o full."
+            ;;
+    esac
+
+    case "${THL_UX_MODE}" in
+        0|1) ;;
+        *)
+            die "Valor invalido THL_UX_MODE=${THL_UX_MODE}. Usa 0 o 1."
             ;;
     esac
 }
@@ -415,6 +426,8 @@ ensure_repo_source() {
     export THL_INSTALL_LOG_FILE
     export THL_SYSTEM_UPGRADE_POLICY
     export THL_INSTALL_LOG_INITIALIZED
+    export THL_UX_MODE
+    export THL_INSTALL_SUMMARY_FILE
 
     exec bash "${BOOTSTRAP_DIR}/install.sh"
 }
@@ -426,7 +439,11 @@ collect_input() {
         SERVER_IP="127.0.0.1"
     fi
 
-    if [ "${THL_NONINTERACTIVE:-0}" = "1" ]; then
+    if [ "${THL_UX_MODE}" = "1" ]; then
+        UX_MODE_ACTIVE="1"
+        THL_NONINTERACTIVE=1
+        interactive_mode=0
+    elif [ "${THL_NONINTERACTIVE:-0}" = "1" ]; then
         interactive_mode=0
     elif ! has_tty; then
         warn "No hay TTY disponible para prompts. Se activa THL_NONINTERACTIVE=1."
@@ -438,6 +455,8 @@ collect_input() {
     if [ -z "${ADMIN_USERNAME}" ]; then
         if [ "${interactive_mode}" = "1" ]; then
             read -r -p "Usuario administrador [admin]: " ADMIN_USERNAME < /dev/tty
+        else
+            warn "THL_ADMIN_USER no definido. Se usara 'admin'."
         fi
         ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
     fi
@@ -460,6 +479,7 @@ collect_input() {
         else
             ADMIN_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=')"
             warn "THL_ADMIN_PASS no definido en modo no interactivo. Se genero password admin aleatorio."
+            ADMIN_PASSWORD_GENERATED="1"
         fi
     fi
 
@@ -472,6 +492,7 @@ collect_input() {
 
     WEB_PORT="${THL_PORT:-}"
     if [ -n "${DOMAIN}" ]; then
+        log "Dominio detectado: ${DOMAIN}. Se habilitara flujo HTTPS con certbot."
         USE_DOMAIN="true"
         WEB_PORT="443"
         APP_URL="https://${DOMAIN}"
@@ -479,6 +500,9 @@ collect_input() {
         COOKIE_SECURE="true"
         PUBLIC_DB_HOST="${DOMAIN}"
     else
+        if [ "${UX_MODE_ACTIVE}" = "1" ]; then
+            warn "THL_DOMAIN no definido en modo UX. Se usara modo IP:puerto (sin TLS automatico)."
+        fi
         USE_DOMAIN="false"
         if [ -z "${WEB_PORT}" ]; then
             if [ "${interactive_mode}" = "0" ]; then
@@ -515,7 +539,7 @@ show_summary() {
     echo -e "${CYAN}========================================${NC}"
     echo ""
 
-    if [ "${THL_NONINTERACTIVE:-0}" = "1" ] || ! has_tty; then
+    if [ "${THL_NONINTERACTIVE:-0}" = "1" ] || [ "${THL_UX_MODE}" = "1" ] || ! has_tty; then
         return
     fi
 
@@ -524,6 +548,22 @@ show_summary() {
     if [[ ! "${CONFIRM}" =~ ^[SsYy]$ ]]; then
         die "Instalacion cancelada."
     fi
+}
+
+write_install_summary_file() {
+    mkdir -p "$(dirname "${THL_INSTALL_SUMMARY_FILE}")"
+    {
+        echo "THL SQL - Resumen de instalacion"
+        echo "Panel URL: ${APP_URL}"
+        echo "Admin user: ${ADMIN_USERNAME}"
+        if [ "${ADMIN_PASSWORD_GENERATED}" = "1" ]; then
+            echo "Admin password temporal: ${ADMIN_PASSWORD}"
+            echo "Accion requerida: cambiar password en el primer ingreso."
+        fi
+        echo "Credenciales completas: ${APP_DIR}/backend/.env"
+        echo "Fecha: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "${THL_INSTALL_SUMMARY_FILE}"
+    chmod 600 "${THL_INSTALL_SUMMARY_FILE}" || true
 }
 
 configure_dns() {
@@ -812,6 +852,7 @@ configure_watchdog() {
 final_report() {
     local services
     services="$(systemctl is-active postgresql pgbouncer haproxy pg_manager nginx 2>/dev/null || true)"
+    write_install_summary_file
 
     echo ""
     echo -e "${GREEN}========================================${NC}"
@@ -819,9 +860,17 @@ final_report() {
     echo -e "${GREEN}========================================${NC}"
     echo "Panel:          ${APP_URL}"
     echo "Usuario admin:  ${ADMIN_USERNAME}"
+    if [ "${ADMIN_PASSWORD_GENERATED}" = "1" ]; then
+        echo "Clave temporal: ${ADMIN_PASSWORD}"
+        echo "Accion:         cambiar password en primer ingreso."
+    fi
+    if [ "${UX_MODE_ACTIVE}" = "1" ]; then
+        echo "Modo UX:        habilitado (sin prompts)."
+    fi
     echo "Firewall:       ${FIREWALL_BACKEND}"
     echo "Servicios:      ${services}"
     echo "Credenciales:   ${APP_DIR}/backend/.env"
+    echo "Resumen UX:     ${THL_INSTALL_SUMMARY_FILE}"
     echo "Logs app:       journalctl -u pg_manager -f"
     echo "Health SQL:     ss -ltn '( sport = :5432 or sport = :6432 or sport = :5433 )'"
     echo -e "${GREEN}========================================${NC}"
