@@ -60,3 +60,6 @@ id_ed25519.pub
 dist/
 build/
 coverage/
+
+# Temporary local sync sources
+.tmp-thl-sql-public-ready/
