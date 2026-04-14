@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export LC_ALL=C
+export LANG=C
 
 APP_DIR="${APP_DIR:-/var/www/pg_manager}"
 ENV_FILE="${1:-${APP_DIR}/backend/.env}"
@@ -7,6 +9,29 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 OS_FAMILY=""
 PKG_TOOL=""
+
+wait_for_tcp_port() {
+    local port="$1"
+    local retries="${2:-90}"
+    local i
+
+    for i in $(seq 1 "${retries}"); do
+        if ss -ltn 2>/dev/null | awk 'NR>1 {print $4}' | grep -Eq "(^|\\]|:)${port}$"; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    return 1
+}
+
+show_unit_logs() {
+    local unit="$1"
+    echo "--- systemctl status ${unit} ---"
+    systemctl status "${unit}" --no-pager -l 2>/dev/null || true
+    echo "--- journalctl -u ${unit} (last 120) ---"
+    journalctl -u "${unit}" --no-pager -n 120 2>/dev/null || true
+}
 
 read_env_value() {
     local key="$1"
@@ -158,6 +183,18 @@ systemctl daemon-reload
 systemctl enable --now pgbouncer haproxy
 systemctl restart pgbouncer
 systemctl restart haproxy
+
+if ! wait_for_tcp_port "${PGBOUNCER_PORT}" 90; then
+    show_unit_logs pgbouncer
+    echo "PgBouncer no quedo escuchando en ${PGBOUNCER_PORT}" >&2
+    exit 1
+fi
+
+if ! wait_for_tcp_port "${PUBLIC_DB_PORT}" 90; then
+    show_unit_logs haproxy
+    echo "HAProxy no quedo escuchando en ${PUBLIC_DB_PORT}" >&2
+    exit 1
+fi
 
 echo "Stack SQL configurado:"
 echo "  PostgreSQL interno: 127.0.0.1:${POSTGRES_PORT}"

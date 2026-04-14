@@ -8,10 +8,12 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "backend", ".env"))
 
-BASE_URL = "http://127.0.0.1:8000"
+BACKEND_PORT = os.getenv("BACKEND_BIND_PORT", "8000")
+BASE_URL = os.getenv("VERIFY_BASE_URL", f"http://127.0.0.1:{BACKEND_PORT}")
 USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 PASSWORD = os.getenv("ADMIN_PASSWORD")
 REQUIRE_POOLING = os.getenv("REQUIRE_POOLING", "true").lower() in ("1", "true", "yes")
+VERIFY_TIMEOUT_SEC = int(os.getenv("VERIFY_TIMEOUT_SEC", "60"))
 
 if not PASSWORD:
     print("Error: ADMIN_PASSWORD not found in environment or .env file.")
@@ -33,7 +35,7 @@ def connect_sql(connection_info: dict):
         database=connection_info["database"],
         user=connection_info["user"],
         password=connection_info["password"],
-        connect_timeout=10,
+        connect_timeout=VERIFY_TIMEOUT_SEC,
         application_name="verify_deployment_sql",
     )
     conn.autocommit = True
@@ -48,13 +50,13 @@ def connect_sql(connection_info: dict):
 def test_login():
     print(f"1. Testing login to {BASE_URL}...")
     try:
-        r = session.get(f"{BASE_URL}/login")
+        r = session.get(f"{BASE_URL}/login", timeout=VERIFY_TIMEOUT_SEC)
         if r.status_code != 200:
             print(f"FAILED: Could not reach login page. Status: {r.status_code}")
             return False
 
         payload = {"username": USERNAME, "password": PASSWORD}
-        r = session.post(f"{BASE_URL}/login", json=payload)
+        r = session.post(f"{BASE_URL}/login", json=payload, timeout=VERIFY_TIMEOUT_SEC)
         if r.status_code != 200:
             print(f"FAILED: Login failed. Status: {r.status_code}, Response: {r.text}")
             return False
@@ -68,7 +70,7 @@ def test_login():
 def test_pooling():
     print("2. Testing pooling endpoint...")
     try:
-        r = session.get(f"{BASE_URL}/api/pooling/status")
+        r = session.get(f"{BASE_URL}/api/pooling/status", timeout=VERIFY_TIMEOUT_SEC)
         if r.status_code != 200:
             print(f"FAILED: Pooling status failed. Status: {r.status_code}, Response: {r.text}")
             return False
@@ -88,14 +90,14 @@ def test_create_db_and_sql_proxy():
     payload = {"client_name": "Test Client Automated", "db_name": "test_db_automated_01"}
     target_id = None
     try:
-        clients = session.get(f"{BASE_URL}/clients")
+        clients = session.get(f"{BASE_URL}/clients", timeout=VERIFY_TIMEOUT_SEC)
         if clients.status_code == 200:
             rows = clients.json()
             existing = next((row for row in rows if row.get("db_name") == payload["db_name"]), None)
             if existing:
-                session.delete(f"{BASE_URL}/clients/{existing['id']}", headers=get_csrf_headers())
+                session.delete(f"{BASE_URL}/clients/{existing['id']}", headers=get_csrf_headers(), timeout=VERIFY_TIMEOUT_SEC)
 
-        r = session.post(f"{BASE_URL}/create-client", json=payload, headers=get_csrf_headers())
+        r = session.post(f"{BASE_URL}/create-client", json=payload, headers=get_csrf_headers(), timeout=VERIFY_TIMEOUT_SEC)
         if r.status_code != 200:
             print(f"FAILED: Create DB failed. Status: {r.status_code}, Response: {r.text}")
             return False
@@ -103,7 +105,7 @@ def test_create_db_and_sql_proxy():
         data = r.json()
         print(f"   Created: {data}")
 
-        clients = session.get(f"{BASE_URL}/clients")
+        clients = session.get(f"{BASE_URL}/clients", timeout=VERIFY_TIMEOUT_SEC)
         rows = clients.json()
         target = next((row for row in rows if row.get("db_name") == payload["db_name"]), None)
         if not target:
@@ -115,6 +117,7 @@ def test_create_db_and_sql_proxy():
             f"{BASE_URL}/api/sql-access/allow",
             json={"ip": "127.0.0.1/32", "databases": [payload["db_name"]]},
             headers=get_csrf_headers(),
+            timeout=VERIFY_TIMEOUT_SEC,
         )
         if allow_resp.status_code != 200:
             print(f"FAILED: Could not allow 127.0.0.1/32. Status: {allow_resp.status_code}, Response: {allow_resp.text}")
@@ -132,12 +135,13 @@ def test_create_db_and_sql_proxy():
                 f"{BASE_URL}/api/sql-access/revoke",
                 json={"ip": "127.0.0.1/32"},
                 headers=get_csrf_headers(),
+                timeout=VERIFY_TIMEOUT_SEC,
             )
         except Exception:
             pass
         if target_id is not None:
             try:
-                session.delete(f"{BASE_URL}/clients/{target_id}", headers=get_csrf_headers())
+                session.delete(f"{BASE_URL}/clients/{target_id}", headers=get_csrf_headers(), timeout=VERIFY_TIMEOUT_SEC)
             except Exception:
                 pass
 

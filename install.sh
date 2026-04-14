@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+export LC_ALL=C
+export LANG=C
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -20,11 +22,16 @@ THL_PRESERVE_EXISTING="${THL_PRESERVE_EXISTING:-1}"
 THL_ACTION="${THL_ACTION:-}"
 THL_FORCE="${THL_FORCE:-0}"
 THL_AUTO_CACHE_CLEAN="${THL_AUTO_CACHE_CLEAN:-1}"
+THL_NO_SYSTEMD="${THL_NO_SYSTEMD:-0}"
+THL_PYTHON_BIN="${THL_PYTHON_BIN:-}"
 FIREWALL_BACKEND=""
 OS_FAMILY=""
 PKG_TOOL=""
 NGINX_CONF_FILE="/etc/nginx/conf.d/pg_manager.conf"
 CRON_WATCHDOG_FILE="/etc/cron.d/thl_sql_watchdog"
+POSTGRES_INTERNAL_PORT="${POSTGRES_INTERNAL_PORT:-5433}"
+PGBOUNCER_INTERNAL_PORT="${PGBOUNCER_INTERNAL_PORT:-6432}"
+BACKEND_BIND_PORT="${BACKEND_BIND_PORT:-8000}"
 ADMIN_PASSWORD_GENERATED="0"
 ADMIN_PASSWORD_SOURCE="pending"
 UX_MODE_ACTIVE="0"
@@ -35,6 +42,7 @@ INSTALL_ACTION="upgrade"
 CURRENT_STEP_INDEX="preflight"
 CURRENT_STEP_NAME="inicio"
 FAILURE_REPORT_FILE=""
+PYTHON_VENV_BIN=""
 
 log() {
     echo -e "${CYAN}$*${NC}"
@@ -49,11 +57,205 @@ die() {
     exit 1
 }
 
+parse_cli_args() {
+    local arg
+    for arg in "$@"; do
+        case "${arg}" in
+            --no-systemd)
+                THL_NO_SYSTEMD="1"
+                ;;
+            --help|-h)
+                cat <<'EOF'
+Uso: install.sh [--no-systemd]
+
+Opciones:
+  --no-systemd   Detecta entornos sin systemd y muestra guia especifica.
+  --help         Muestra esta ayuda.
+EOF
+                exit 0
+                ;;
+            *)
+                warn "Argumento no reconocido: ${arg}"
+                ;;
+        esac
+    done
+}
+
+is_systemd_available() {
+    command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
+}
+
+get_debian_main_cluster_version() {
+    if ! command -v pg_lsclusters >/dev/null 2>&1; then
+        return 0
+    fi
+    pg_lsclusters --no-header 2>/dev/null | awk '$2=="main" {print $1; exit}'
+}
+
+get_debian_main_cluster_port() {
+    if ! command -v pg_lsclusters >/dev/null 2>&1; then
+        return 0
+    fi
+    pg_lsclusters --no-header 2>/dev/null | awk '$2=="main" && $3 ~ /^[0-9]+$/ {print $3; exit}'
+}
+
+debian_cluster_exists() {
+    local cluster_version="$1"
+    local cluster_name="${2:-main}"
+    command -v pg_lsclusters >/dev/null 2>&1 || return 1
+    pg_lsclusters --no-header 2>/dev/null | awk -v ver="${cluster_version}" -v name="${cluster_name}" '$1==ver && $2==name {found=1} END {exit(found ? 0 : 1)}'
+}
+
+postgres_service_unit() {
+    local cluster_version
+    cluster_version="$(get_debian_main_cluster_version || true)"
+    if [ -n "${cluster_version}" ]; then
+        echo "postgresql@${cluster_version}-main"
+        return
+    fi
+    echo "postgresql"
+}
+
+show_postgres_diagnostics() {
+    local unit cluster_version pg_log pg_hba pg_conf
+    unit="$(postgres_service_unit)"
+    cluster_version="$(get_debian_main_cluster_version || true)"
+
+    if is_systemd_available; then
+        echo "--- systemctl status ${unit} ---"
+        systemctl status "${unit}" --no-pager -l 2>/dev/null || true
+        echo "--- journalctl -xeu ${unit} (last 100) ---"
+        journalctl -xeu "${unit}" --no-pager -n 100 2>/dev/null || true
+    fi
+
+    if command -v pg_lsclusters >/dev/null 2>&1; then
+        echo "[pg_lsclusters]"
+        pg_lsclusters || true
+    fi
+
+    if [ -n "${cluster_version}" ]; then
+        pg_log="/var/log/postgresql/postgresql-${cluster_version}-main.log"
+        if [ -f "${pg_log}" ]; then
+            echo "--- ${pg_log} (last 200) ---"
+            tail -n 200 "${pg_log}" || true
+        fi
+    fi
+
+    echo "[Network ports]"
+    ss -tlnp 2>/dev/null | grep -E "5432|${POSTGRES_INTERNAL_PORT}|${PGBOUNCER_INTERNAL_PORT}|${BACKEND_BIND_PORT}" || true
+
+    pg_hba="$(find /etc/postgresql /var/lib/pgsql -name pg_hba.conf 2>/dev/null | head -1 || true)"
+    pg_conf="$(find /etc/postgresql /var/lib/pgsql -name postgresql.conf 2>/dev/null | head -1 || true)"
+    if [ -n "${pg_hba}" ] && [ -f "${pg_hba}" ]; then
+        echo "--- ${pg_hba} ---"
+        cat "${pg_hba}" || true
+    fi
+    if [ -n "${pg_conf}" ] && [ -f "${pg_conf}" ]; then
+        echo "--- ${pg_conf} ---"
+        cat "${pg_conf}" || true
+    fi
+}
+
+wait_for_tcp_port() {
+    local port="$1"
+    local retries="${2:-90}"
+    local i
+
+    for i in $(seq 1 "${retries}"); do
+        if ss -ltn 2>/dev/null | awk 'NR>1 {print $4}' | grep -Eq "(^|\\]|:)${port}$"; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    return 1
+}
+
+wait_for_systemd_unit_active() {
+    local unit="$1"
+    local retries="${2:-60}"
+    local i
+
+    if ! is_systemd_available; then
+        return 1
+    fi
+
+    for i in $(seq 1 "${retries}"); do
+        if systemctl is-active --quiet "${unit}"; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    return 1
+}
+
+show_systemd_unit_logs() {
+    local unit="$1"
+    if ! is_systemd_available; then
+        return 0
+    fi
+    echo "--- systemctl status ${unit} ---"
+    systemctl status "${unit}" --no-pager -l 2>/dev/null || true
+    echo "--- journalctl -u ${unit} (last 120) ---"
+    journalctl -u "${unit}" --no-pager -n 120 2>/dev/null || true
+}
+
+reload_or_restart_postgres_runtime() {
+    local cluster_version
+
+    cluster_version="$(get_debian_main_cluster_version || true)"
+    if [ -n "${cluster_version}" ] && command -v pg_ctlcluster >/dev/null 2>&1; then
+        pg_ctlcluster "${cluster_version}" main reload >/dev/null 2>&1 || \
+            pg_ctlcluster "${cluster_version}" main restart >/dev/null 2>&1 || true
+        return
+    fi
+
+    if is_systemd_available; then
+        systemctl reload "$(postgres_service_unit)" >/dev/null 2>&1 || \
+            systemctl restart "$(postgres_service_unit)" >/dev/null 2>&1 || true
+    fi
+}
+
+select_python_for_venv() {
+    local candidate py_version
+
+    if [ -n "${THL_PYTHON_BIN}" ]; then
+        if ! command -v "${THL_PYTHON_BIN}" >/dev/null 2>&1; then
+            die "THL_PYTHON_BIN=${THL_PYTHON_BIN} no existe en PATH."
+        fi
+        PYTHON_VENV_BIN="${THL_PYTHON_BIN}"
+        return
+    fi
+
+    for candidate in python3.12 python3.11 python3; do
+        if ! command -v "${candidate}" >/dev/null 2>&1; then
+            continue
+        fi
+        if ! "${candidate}" -m venv --help >/dev/null 2>&1; then
+            continue
+        fi
+        py_version="$("${candidate}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+        case "${py_version}" in
+            3.10|3.11|3.12|3.13)
+                PYTHON_VENV_BIN="${candidate}"
+                log "Python seleccionado para venv: ${candidate} (${py_version})"
+                return
+                ;;
+        esac
+    done
+
+    die "No se encontro un interprete Python compatible para crear el venv."
+}
+
 collect_failure_diagnostics() {
     local exit_code="${1:-1}"
     local line_no="${2:-unknown}"
     local failed_command="${3:-unknown}"
     local ts
+    local postgres_unit
+
+    postgres_unit="$(postgres_service_unit)"
 
     ts="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)"
     FAILURE_REPORT_FILE="/var/log/thl-sql-failure-${ts}.log"
@@ -77,22 +279,21 @@ collect_failure_diagnostics() {
         free -m || true
         echo ""
         echo "[Service State]"
-        systemctl is-active postgresql pgbouncer haproxy pg_manager nginx 2>/dev/null || true
-        for svc in postgresql pgbouncer haproxy pg_manager nginx; do
-            echo ""
-            echo "--- systemctl status ${svc} ---"
-            systemctl status "${svc}" --no-pager -l 2>/dev/null || true
-            echo "--- journalctl -u ${svc} (last 120) ---"
-            journalctl -u "${svc}" --no-pager -n 120 2>/dev/null || true
-        done
-        echo ""
-        echo "[Network]"
-        ss -ltn || true
-        if command -v pg_lsclusters >/dev/null 2>&1; then
-            echo ""
-            echo "[pg_lsclusters]"
-            pg_lsclusters || true
+        if is_systemd_available; then
+            systemctl is-active "${postgres_unit}" pgbouncer haproxy pg_manager nginx 2>/dev/null || true
+            for svc in "${postgres_unit}" pgbouncer haproxy pg_manager nginx; do
+                echo ""
+                echo "--- systemctl status ${svc} ---"
+                systemctl status "${svc}" --no-pager -l 2>/dev/null || true
+                echo "--- journalctl -u ${svc} (last 120) ---"
+                journalctl -u "${svc}" --no-pager -n 120 2>/dev/null || true
+            done
+        else
+            echo "systemd no disponible en este entorno."
         fi
+        echo ""
+        echo "[PostgreSQL diagnostics]"
+        show_postgres_diagnostics
     } > "${FAILURE_REPORT_FILE}" 2>&1
 
     warn "Diagnostico de fallo generado: ${FAILURE_REPORT_FILE}"
@@ -145,9 +346,15 @@ require_root() {
 }
 
 require_systemd() {
-    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
-        die "Error: este instalador requiere systemd."
+    if is_systemd_available; then
+        return
     fi
+
+    if [ "${THL_NO_SYSTEMD}" = "1" ]; then
+        die "Entorno sin systemd detectado. Aun no hay fallback automatico para supervisord/init. Usa un VPS o VM con systemd, o despliega manualmente PostgreSQL, PgBouncer, HAProxy, Nginx y pg_manager."
+    fi
+
+    die "Error: este instalador requiere systemd. Si estas en contenedor/CI/LXC sin systemd, reintenta con --no-systemd para ver guia especifica."
 }
 
 validate_install_settings() {
@@ -190,6 +397,13 @@ validate_install_settings() {
         0|1) ;;
         *)
             die "Valor invalido THL_AUTO_CACHE_CLEAN=${THL_AUTO_CACHE_CLEAN}. Usa 0 o 1."
+            ;;
+    esac
+
+    case "${THL_NO_SYSTEMD}" in
+        0|1) ;;
+        *)
+            die "Valor invalido THL_NO_SYSTEMD=${THL_NO_SYSTEMD}. Usa 0 o 1."
             ;;
     esac
 
@@ -327,30 +541,40 @@ run_as_postgres() {
 }
 
 detect_active_postgres_port() {
-    local candidate
-    local -a candidates=()
+    local retries="${1:-12}"
+    local sleep_sec="${2:-1}"
+    local attempt candidate cluster_port
+    local -a candidates=("${POSTGRES_INTERNAL_PORT}" 5432 5433 5434 5435)
 
-    if [ "${OS_FAMILY}" = "debian" ] && command -v pg_lsclusters >/dev/null 2>&1; then
-        while read -r ver name port status owner data logf; do
-            if [ "${status}" = "online" ] && [ -n "${port}" ]; then
-                echo "${port}"
+    for attempt in $(seq 1 "${retries}"); do
+        if [ "${OS_FAMILY}" = "debian" ] && command -v pg_lsclusters >/dev/null 2>&1; then
+            cluster_port="$(pg_lsclusters --no-header 2>/dev/null | awk '$2=="main" && $4=="online" && $3 ~ /^[0-9]+$/ {print $3; exit}')"
+            if [ -n "${cluster_port}" ]; then
+                echo "${cluster_port}"
                 return 0
             fi
-        done < <(pg_lsclusters --no-header 2>/dev/null || true)
-    fi
 
-    candidates+=(5432 5433 5434 5435)
-    for candidate in "${candidates[@]}"; do
-        if run_as_postgres "psql -p \"${candidate}\" -Atqc \"select 1\"" >/dev/null 2>&1; then
-            echo "${candidate}"
+            cluster_port="$(pg_lsclusters --no-header 2>/dev/null | awk '$4=="online" && $3 ~ /^[0-9]+$/ {print $3; exit}')"
+            if [ -n "${cluster_port}" ]; then
+                echo "${cluster_port}"
+                return 0
+            fi
+        fi
+
+        for candidate in "${candidates[@]}"; do
+            if run_as_postgres "psql -p \"${candidate}\" -Atqc \"select 1\"" >/dev/null 2>&1; then
+                echo "${candidate}"
+                return 0
+            fi
+        done
+
+        if run_as_postgres "psql -Atqc \"show port\"" >/dev/null 2>&1; then
+            run_as_postgres "psql -Atqc \"show port\"" | head -1
             return 0
         fi
-    done
 
-    if run_as_postgres "psql -Atqc \"show port\"" >/dev/null 2>&1; then
-        run_as_postgres "psql -Atqc \"show port\"" | head -1
-        return 0
-    fi
+        sleep "${sleep_sec}"
+    done
 
     return 1
 }
@@ -389,16 +613,21 @@ ensure_debian_postgres_cluster() {
     fi
 
     local cluster_count
+    local pg_major=""
     cluster_count="$(pg_lsclusters --no-header 2>/dev/null | wc -l | tr -d ' ')"
-    if [ "${cluster_count}" = "0" ]; then
-        local pg_major
+    if ! pg_lsclusters --no-header 2>/dev/null | awk '$2=="main" {found=1} END {exit(found ? 0 : 1)}'; then
         pg_major="$(psql --version 2>/dev/null | sed -n 's/^psql (PostgreSQL) \([0-9][0-9]*\).*/\1/p' | head -1 || true)"
         if [ -z "${pg_major}" ] && [ -d /usr/lib/postgresql ]; then
             pg_major="$(ls -1 /usr/lib/postgresql | sort -V | tail -1 || true)"
         fi
-        if [ -n "${pg_major}" ]; then
-            log "No hay cluster PostgreSQL en Debian. Creando cluster ${pg_major}/main..."
-            pg_createcluster "${pg_major}" main --start || true
+        if [ -n "${pg_major}" ] && ! debian_cluster_exists "${pg_major}" main; then
+            if [ "${cluster_count}" = "0" ]; then
+                log "No hay cluster PostgreSQL en Debian. Creando cluster ${pg_major}/main..."
+            else
+                log "No existe cluster Debian main. Creando cluster ${pg_major}/main..."
+            fi
+            pg_createcluster "${pg_major}" main --port="${POSTGRES_INTERNAL_PORT}" --start
+            wait_for_postgres_access "${POSTGRES_INTERNAL_PORT}" 60 || true
         fi
     fi
 
@@ -407,6 +636,10 @@ ensure_debian_postgres_cluster() {
             pg_ctlcluster "${ver}" "${name}" start || true
         fi
     done < <(pg_lsclusters --no-header 2>/dev/null || true)
+
+    if [ -n "$(get_debian_main_cluster_port || true)" ]; then
+        wait_for_postgres_access "$(get_debian_main_cluster_port || true)" 60 || true
+    fi
 }
 
 cleanup_stale_postmaster_pid() {
@@ -454,7 +687,7 @@ debian_recover_postgres_cluster() {
         done < <(pg_lsclusters --no-header 2>/dev/null || true)
 
         sleep 2
-        healed_port="$(detect_active_postgres_port || true)"
+        healed_port="$(detect_active_postgres_port 20 1 || true)"
         if [ -n "${healed_port}" ] && wait_for_postgres_access "${healed_port}" 30; then
             echo "${healed_port}"
             return 0
@@ -469,7 +702,7 @@ resolve_postgres_port_with_recovery() {
     local detected_port=""
 
     for attempt in $(seq 1 4); do
-        detected_port="$(detect_active_postgres_port || true)"
+        detected_port="$(detect_active_postgres_port 20 1 || true)"
         if [ -n "${detected_port}" ] && wait_for_postgres_access "${detected_port}" 90; then
             echo "${detected_port}"
             return 0
@@ -489,7 +722,7 @@ resolve_postgres_port_with_recovery() {
 
     if [ "${OS_FAMILY}" = "debian" ] && command -v pg_lsclusters >/dev/null 2>&1; then
         detected_port="$(pg_lsclusters --no-header 2>/dev/null | awk '$4=="online" && $3 ~ /^[0-9]+$/ {print $3; exit}')"
-        if [ -n "${detected_port}" ] && wait_for_postgres_access "${detected_port}" 45; then
+        if [ -n "${detected_port}" ] && wait_for_postgres_access "${detected_port}" 90; then
             echo "${detected_port}"
             return 0
         fi
@@ -1190,6 +1423,7 @@ configure_postgres_service() {
     log "[3/11] Configurando PostgreSQL..."
     local pg_port=""
     local pg_password_sql
+    local cluster_version
     local i
 
     if [ "${OS_FAMILY}" = "rhel" ] && [ ! -f /var/lib/pgsql/data/PG_VERSION ]; then
@@ -1204,10 +1438,7 @@ configure_postgres_service() {
 
     pg_port="$(resolve_postgres_port_with_recovery || true)"
     if [ -z "${pg_port}" ]; then
-        if [ "${OS_FAMILY}" = "debian" ] && command -v pg_lsclusters >/dev/null 2>&1; then
-            pg_lsclusters || true
-        fi
-        journalctl -u postgresql --no-pager -n 80 || true
+        show_postgres_diagnostics
         die "PostgreSQL no quedo accesible tras el arranque inicial."
     fi
 
@@ -1219,10 +1450,7 @@ configure_postgres_service() {
         sleep 1
     done
     if [ "${i}" -ge 30 ]; then
-        if [ "${OS_FAMILY}" = "debian" ] && command -v pg_lsclusters >/dev/null 2>&1; then
-            pg_lsclusters || true
-        fi
-        journalctl -u postgresql --no-pager -n 120 || true
+        show_postgres_diagnostics
         die "No se pudo actualizar password de postgres en puerto ${pg_port}."
     fi
 
@@ -1247,15 +1475,24 @@ configure_postgres_service() {
         echo "include_if_exists ${pg_hba_include}" >> "${pg_hba}"
     fi
 
-    systemctl restart postgresql
+    reload_or_restart_postgres_runtime
+    wait_for_postgres_access "${pg_port}" 60 || true
 
     cp "${SCRIPT_DIR}/server/configure_postgres_timeouts.sh" /usr/local/bin/configure_postgres_timeouts.sh
     chmod +x /usr/local/bin/configure_postgres_timeouts.sh
     if ! /usr/local/bin/configure_postgres_timeouts.sh; then
         warn "configure_postgres_timeouts.sh fallo. Reintentando una vez..."
+        cluster_version="$(get_debian_main_cluster_version || true)"
+        if [ -n "${cluster_version}" ] && command -v pg_ctlcluster >/dev/null 2>&1; then
+            pg_ctlcluster "${cluster_version}" main reload >/dev/null 2>&1 || \
+                pg_ctlcluster "${cluster_version}" main restart >/dev/null 2>&1 || true
+        else
+            reload_or_restart_postgres_runtime
+        fi
+        wait_for_postgres_access "${POSTGRES_INTERNAL_PORT}" 60 || wait_for_postgres_access "${pg_port}" 60 || true
         sleep 3
         /usr/local/bin/configure_postgres_timeouts.sh || {
-            journalctl -u postgresql --no-pager -n 80 || true
+            show_postgres_diagnostics
             die "No se pudo completar la configuracion final de PostgreSQL."
         }
     fi
@@ -1282,7 +1519,8 @@ deploy_app() {
 
 setup_python_env() {
     log "[5/11] Instalando dependencias Python..."
-    python3 -m venv "${APP_DIR}/venv"
+    select_python_for_venv
+    "${PYTHON_VENV_BIN}" -m venv "${APP_DIR}/venv"
     "${APP_DIR}/venv/bin/pip" install --upgrade pip
     "${APP_DIR}/venv/bin/pip" install -r "${APP_DIR}/backend/requirements.txt"
 }
@@ -1304,7 +1542,7 @@ write_env_file() {
     fi
 
     set_env_key "${env_file_path}" "DB_HOST" "127.0.0.1"
-    set_env_key "${env_file_path}" "DB_PORT" "5433"
+    set_env_key "${env_file_path}" "DB_PORT" "${POSTGRES_INTERNAL_PORT}"
     set_env_key "${env_file_path}" "DB_NAME" "postgres"
     set_env_key "${env_file_path}" "DB_USER" "postgres"
     set_env_key "${env_file_path}" "DB_PASSWORD" "${PG_PASSWORD}"
@@ -1319,7 +1557,7 @@ write_env_file() {
         ensure_env_key "${env_file_path}" "PUBLIC_DB_PORT" "5432"
         ensure_env_key "${env_file_path}" "POOLING_ENABLED" "true"
         ensure_env_key "${env_file_path}" "PGBOUNCER_HOST" "127.0.0.1"
-        ensure_env_key "${env_file_path}" "PGBOUNCER_PORT" "6432"
+        ensure_env_key "${env_file_path}" "PGBOUNCER_PORT" "${PGBOUNCER_INTERNAL_PORT}"
         ensure_env_key "${env_file_path}" "POOL_MODE" "transaction"
         ensure_env_key "${env_file_path}" "PGBOUNCER_MAX_CLIENT_CONN" "2000"
         ensure_env_key "${env_file_path}" "PGBOUNCER_DEFAULT_POOL_SIZE" "80"
@@ -1349,7 +1587,7 @@ write_env_file() {
         set_env_key "${env_file_path}" "PUBLIC_DB_PORT" "5432"
         set_env_key "${env_file_path}" "POOLING_ENABLED" "true"
         set_env_key "${env_file_path}" "PGBOUNCER_HOST" "127.0.0.1"
-        set_env_key "${env_file_path}" "PGBOUNCER_PORT" "6432"
+        set_env_key "${env_file_path}" "PGBOUNCER_PORT" "${PGBOUNCER_INTERNAL_PORT}"
         set_env_key "${env_file_path}" "POOL_MODE" "transaction"
         set_env_key "${env_file_path}" "PGBOUNCER_MAX_CLIENT_CONN" "2000"
         set_env_key "${env_file_path}" "PGBOUNCER_DEFAULT_POOL_SIZE" "80"
@@ -1401,7 +1639,7 @@ After=network.target postgresql.service
 User=root
 WorkingDirectory=${APP_DIR}/backend
 EnvironmentFile=${APP_DIR}/backend/.env
-ExecStart=${APP_DIR}/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+ExecStart=${APP_DIR}/venv/bin/uvicorn main:app --host 127.0.0.1 --port ${BACKEND_BIND_PORT}
 Restart=always
 RestartSec=5
 
@@ -1438,7 +1676,7 @@ verify_admin_login() {
     [ -n "${admin_user}" ] || die "ADMIN_USERNAME vacio en ${env_file}."
     [ -n "${admin_pass}" ] || die "ADMIN_PASSWORD vacio en ${env_file}."
 
-    if ! wait_for_http_endpoint "http://127.0.0.1:8000/login" 45; then
+    if ! wait_for_http_endpoint "http://127.0.0.1:${BACKEND_BIND_PORT}/login" 45; then
         journalctl -u pg_manager --no-pager -n 120 || true
         die "pg_manager no responde en /login tras iniciar servicio."
     fi
@@ -1449,7 +1687,7 @@ verify_admin_login() {
     http_code="$(curl -sS -o "${tmp_resp}" -w "%{http_code}" \
         -H "Content-Type: application/json" \
         -d "${payload}" \
-        "http://127.0.0.1:8000/login" || true)"
+        "http://127.0.0.1:${BACKEND_BIND_PORT}/login" || true)"
 
     if [ "${http_code}" != "200" ]; then
         warn "Verificacion login admin fallo (HTTP ${http_code}). Reintentando tras reinicio de pg_manager..."
@@ -1458,7 +1696,7 @@ verify_admin_login() {
         http_code="$(curl -sS -o "${tmp_resp}" -w "%{http_code}" \
             -H "Content-Type: application/json" \
             -d "${payload}" \
-            "http://127.0.0.1:8000/login" || true)"
+            "http://127.0.0.1:${BACKEND_BIND_PORT}/login" || true)"
     fi
 
     if [ "${http_code}" != "200" ]; then
@@ -1474,6 +1712,7 @@ verify_admin_login() {
 
 configure_nginx() {
     log "[9/11] Configurando Nginx..."
+    local nginx_local_url="http://127.0.0.1/"
     mkdir -p /etc/nginx/conf.d
 
     if [ -d /etc/nginx/sites-enabled ]; then
@@ -1488,7 +1727,7 @@ server {
     server_name ${DOMAIN};
 
     location / {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:${BACKEND_BIND_PORT};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -1513,6 +1752,7 @@ NGEOF
             warn "Certbot no esta disponible. Se omite TLS automatico."
         fi
     else
+        nginx_local_url="http://127.0.0.1:${WEB_PORT}/"
         cat > "${NGINX_CONF_FILE}" <<NGEOF
 server {
     listen ${WEB_PORT};
@@ -1524,7 +1764,7 @@ server {
     add_header Permissions-Policy "geolocation=(), microphone=(), camera=()";
 
     location / {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:${BACKEND_BIND_PORT};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -1537,6 +1777,11 @@ server {
 NGEOF
         nginx -t
         systemctl reload nginx
+    fi
+
+    if ! wait_for_http_endpoint "${nginx_local_url}" 60; then
+        show_systemd_unit_logs nginx
+        die "Nginx no quedo respondiendo en ${nginx_local_url}."
     fi
 }
 
@@ -1576,9 +1821,66 @@ CRONEOF
     chmod 644 "${CRON_WATCHDOG_FILE}"
 }
 
+verify_stack_health() {
+    local nginx_local_url="http://127.0.0.1/"
+
+    if [ "${USE_DOMAIN}" != "true" ]; then
+        nginx_local_url="http://127.0.0.1:${WEB_PORT}/"
+    fi
+
+    log "[health] Verificando servicios finales..."
+
+    if command -v pg_isready >/dev/null 2>&1; then
+        if ! pg_isready -q -h 127.0.0.1 -p "${POSTGRES_INTERNAL_PORT}" >/dev/null 2>&1; then
+            show_postgres_diagnostics
+            die "Health check fallo: PostgreSQL no responde en ${POSTGRES_INTERNAL_PORT}."
+        fi
+    elif ! wait_for_postgres_access "${POSTGRES_INTERNAL_PORT}" 90; then
+        show_postgres_diagnostics
+        die "Health check fallo: PostgreSQL no responde en ${POSTGRES_INTERNAL_PORT}."
+    fi
+    echo -e "${GREEN}[OK] PostgreSQL responde en ${POSTGRES_INTERNAL_PORT}${NC}"
+
+    if ! wait_for_tcp_port "${PGBOUNCER_INTERNAL_PORT}" 90; then
+        show_systemd_unit_logs pgbouncer
+        die "Health check fallo: PgBouncer no esta escuchando en ${PGBOUNCER_INTERNAL_PORT}."
+    fi
+    if command -v pg_isready >/dev/null 2>&1 && ! pg_isready -q -h 127.0.0.1 -p "${PGBOUNCER_INTERNAL_PORT}" >/dev/null 2>&1; then
+        show_systemd_unit_logs pgbouncer
+        die "Health check fallo: PgBouncer no responde en ${PGBOUNCER_INTERNAL_PORT}."
+    fi
+    echo -e "${GREEN}[OK] PgBouncer responde en ${PGBOUNCER_INTERNAL_PORT}${NC}"
+
+    if ! wait_for_http_endpoint "http://127.0.0.1:${BACKEND_BIND_PORT}/health" 60; then
+        show_systemd_unit_logs pg_manager
+        die "Health check fallo: pg_manager no responde en /health."
+    fi
+    echo -e "${GREEN}[OK] Backend responde en http://127.0.0.1:${BACKEND_BIND_PORT}/health${NC}"
+
+    if ! wait_for_http_endpoint "${nginx_local_url}" 60; then
+        show_systemd_unit_logs nginx
+        die "Health check fallo: Nginx no responde en ${nginx_local_url}."
+    fi
+    echo -e "${GREEN}[OK] Nginx responde en ${nginx_local_url}${NC}"
+
+    if is_systemd_available; then
+        if ! wait_for_systemd_unit_active haproxy 60; then
+            show_systemd_unit_logs haproxy
+            die "Health check fallo: HAProxy no esta activo."
+        fi
+    fi
+    if ! wait_for_tcp_port 5432 90; then
+        show_systemd_unit_logs haproxy
+        die "Health check fallo: HAProxy no esta escuchando en 5432."
+    fi
+    echo -e "${GREEN}[OK] HAProxy activo y escuchando en 5432${NC}"
+}
+
 final_report() {
-    local services
-    services="$(systemctl is-active postgresql pgbouncer haproxy pg_manager nginx 2>/dev/null || true)"
+    local services="n/a"
+    if is_systemd_available; then
+        services="$(systemctl is-active "$(postgres_service_unit)" pgbouncer haproxy pg_manager nginx 2>/dev/null || true)"
+    fi
     write_install_summary_file
 
     echo ""
@@ -1607,11 +1909,13 @@ final_report() {
     echo "Credenciales:   ${APP_DIR}/backend/.env"
     echo "Resumen UX:     ${THL_INSTALL_SUMMARY_FILE}"
     echo "Logs app:       journalctl -u pg_manager -f"
-    echo "Health SQL:     ss -ltn '( sport = :5432 or sport = :6432 or sport = :5433 )'"
+    echo "Health SQL:     ss -ltn '( sport = :5432 or sport = :${PGBOUNCER_INTERNAL_PORT} or sport = :${POSTGRES_INTERNAL_PORT} )'"
     echo -e "${GREEN}========================================${NC}"
 }
 
 main() {
+    parse_cli_args "$@"
+
     echo -e "${CYAN}========================================${NC}"
     echo -e "${CYAN}  THL SQL - Instalador Multi-Distro${NC}"
     echo -e "${CYAN}========================================${NC}"
@@ -1640,6 +1944,7 @@ main() {
     run_install_step "9/11" "Configurando Nginx" configure_nginx
     run_install_step "10/11" "Configurando firewall" configure_firewall
     run_install_step "11/11" "Configurando watchdog" configure_watchdog
+    run_install_step "11b/11" "Validando servicios finales" verify_stack_health
     run_install_step "FINAL" "Generando reporte final" final_report
 }
 
