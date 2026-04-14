@@ -9,6 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 OS_FAMILY=""
 PKG_TOOL=""
+RUNTIME_ENV=""
+SERVICE_MANAGER=""
 
 wait_for_tcp_port() {
     local port="$1"
@@ -27,10 +29,22 @@ wait_for_tcp_port() {
 
 show_unit_logs() {
     local unit="$1"
-    echo "--- systemctl status ${unit} ---"
-    systemctl status "${unit}" --no-pager -l 2>/dev/null || true
-    echo "--- journalctl -u ${unit} (last 120) ---"
-    journalctl -u "${unit}" --no-pager -n 120 2>/dev/null || true
+    local script_name
+    if [ "${SERVICE_MANAGER}" = "systemd" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        echo "--- systemctl status ${unit} ---"
+        systemctl status "${unit}" --no-pager -l 2>/dev/null || true
+        echo "--- journalctl -u ${unit} (last 120) ---"
+        journalctl -u "${unit}" --no-pager -n 120 2>/dev/null || true
+        return
+    fi
+
+    if ! command -v service >/dev/null 2>&1; then
+        return
+    fi
+
+    script_name="$(service_script_name "${unit}")"
+    echo "--- service ${script_name} status ---"
+    service "${script_name}" status 2>/dev/null || true
 }
 
 read_env_value() {
@@ -39,6 +53,107 @@ read_env_value() {
         return 0
     fi
     grep -m1 "^${key}=" "${ENV_FILE}" | cut -d'=' -f2- || true
+}
+
+is_systemd_available() {
+    command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
+}
+
+is_container_environment() {
+    [ -f /.dockerenv ] && return 0
+    [ -f /run/.containerenv ] && return 0
+    grep -qaE '(docker|containerd|kubepods|podman|lxc)' /proc/1/cgroup 2>/dev/null && return 0
+    grep -qaE '(docker|containerd|kubepods|podman|lxc)' /proc/1/environ 2>/dev/null && return 0
+    return 1
+}
+
+detect_runtime_context() {
+    RUNTIME_ENV="${RUNTIME_ENV:-$(read_env_value RUNTIME_ENV)}"
+    SERVICE_MANAGER="${SERVICE_MANAGER:-$(read_env_value SERVICE_MANAGER)}"
+
+    case "${RUNTIME_ENV}" in
+        container|host) ;;
+        *)
+            if is_container_environment; then
+                RUNTIME_ENV="container"
+            else
+                RUNTIME_ENV="host"
+            fi
+            ;;
+    esac
+
+    case "${SERVICE_MANAGER}" in
+        systemd|service) ;;
+        *)
+            if is_systemd_available; then
+                SERVICE_MANAGER="systemd"
+            elif command -v service >/dev/null 2>&1; then
+                SERVICE_MANAGER="service"
+            else
+                SERVICE_MANAGER="unknown"
+            fi
+            ;;
+    esac
+}
+
+service_script_name() {
+    local service="$1"
+    case "${service}" in
+        postgresql@*-main)
+            echo "postgresql"
+            ;;
+        *)
+            echo "${service}"
+            ;;
+    esac
+}
+
+service_script_exists() {
+    local service="$1"
+    local script_name
+    script_name="$(service_script_name "${service}")"
+    [ -f "/etc/init.d/${script_name}" ] || [ -x "/etc/init.d/${script_name}" ]
+}
+
+enable_service_if_exists() {
+    local service="$1"
+    local script_name
+
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        systemctl enable --now "${service}" >/dev/null 2>&1 || true
+        return
+    fi
+
+    if [ "${SERVICE_MANAGER}" != "service" ]; then
+        return
+    fi
+
+    script_name="$(service_script_name "${service}")"
+    if service_script_exists "${script_name}"; then
+        if command -v update-rc.d >/dev/null 2>&1; then
+            update-rc.d "${script_name}" defaults >/dev/null 2>&1 || true
+        fi
+        service "${script_name}" start >/dev/null 2>&1 || true
+    fi
+}
+
+restart_service() {
+    local service="$1"
+    local script_name
+
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        systemctl restart "${service}" >/dev/null 2>&1 || true
+        return
+    fi
+
+    if [ "${SERVICE_MANAGER}" != "service" ]; then
+        return
+    fi
+
+    script_name="$(service_script_name "${service}")"
+    if service_script_exists "${script_name}"; then
+        service "${script_name}" restart >/dev/null 2>&1 || true
+    fi
 }
 
 detect_os() {
@@ -148,6 +263,11 @@ render_template() {
 }
 
 echo "Instalando stack de pooling SQL (PgBouncer + HAProxy)..."
+detect_runtime_context
+if [ "${SERVICE_MANAGER}" = "unknown" ]; then
+    echo "No se detecto un gestor de servicios compatible para PgBouncer/HAProxy." >&2
+    exit 1
+fi
 detect_os
 pkg_install
 
@@ -179,10 +299,13 @@ if command -v haproxy >/dev/null 2>&1; then
     haproxy -c -f /etc/haproxy/haproxy.cfg
 fi
 
-systemctl daemon-reload
-systemctl enable --now pgbouncer haproxy
-systemctl restart pgbouncer
-systemctl restart haproxy
+if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+    systemctl daemon-reload
+fi
+enable_service_if_exists pgbouncer
+enable_service_if_exists haproxy
+restart_service pgbouncer
+restart_service haproxy
 
 if ! wait_for_tcp_port "${PGBOUNCER_PORT}" 90; then
     show_unit_logs pgbouncer

@@ -27,6 +27,8 @@ THL_PYTHON_BIN="${THL_PYTHON_BIN:-}"
 FIREWALL_BACKEND=""
 OS_FAMILY=""
 PKG_TOOL=""
+RUNTIME_ENV=""
+SERVICE_MANAGER=""
 NGINX_CONF_FILE="/etc/nginx/conf.d/pg_manager.conf"
 CRON_WATCHDOG_FILE="/etc/cron.d/thl_sql_watchdog"
 POSTGRES_INTERNAL_PORT="${POSTGRES_INTERNAL_PORT:-5433}"
@@ -43,6 +45,10 @@ CURRENT_STEP_INDEX="preflight"
 CURRENT_STEP_NAME="inicio"
 FAILURE_REPORT_FILE=""
 PYTHON_VENV_BIN=""
+PG_MANAGER_PID_FILE="/run/pg_manager.pid"
+PG_MANAGER_LOG_FILE="/var/log/pg_manager.log"
+PG_HBA_MANAGED_START="# BEGIN THL SQL MANAGED RULES"
+PG_HBA_MANAGED_END="# END THL SQL MANAGED RULES"
 
 log() {
     echo -e "${CYAN}$*${NC}"
@@ -69,7 +75,7 @@ parse_cli_args() {
 Uso: install.sh [--no-systemd]
 
 Opciones:
-  --no-systemd   Detecta entornos sin systemd y muestra guia especifica.
+  --no-systemd   Fuerza el modo compatible con 'service' en lugar de systemd.
   --help         Muestra esta ayuda.
 EOF
                 exit 0
@@ -83,6 +89,170 @@ EOF
 
 is_systemd_available() {
     command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
+}
+
+is_container_environment() {
+    [ -f /.dockerenv ] && return 0
+    [ -f /run/.containerenv ] && return 0
+    grep -qaE '(docker|containerd|kubepods|podman|lxc)' /proc/1/cgroup 2>/dev/null && return 0
+    grep -qaE '(docker|containerd|kubepods|podman|lxc)' /proc/1/environ 2>/dev/null && return 0
+    return 1
+}
+
+detect_runtime_context() {
+    if is_container_environment; then
+        RUNTIME_ENV="container"
+    else
+        RUNTIME_ENV="host"
+    fi
+
+    if [ "${THL_NO_SYSTEMD}" = "1" ]; then
+        if command -v service >/dev/null 2>&1; then
+            SERVICE_MANAGER="service"
+        else
+            SERVICE_MANAGER=""
+        fi
+    elif is_systemd_available; then
+        SERVICE_MANAGER="systemd"
+    elif command -v service >/dev/null 2>&1; then
+        SERVICE_MANAGER="service"
+    else
+        SERVICE_MANAGER=""
+    fi
+
+    log "Entorno detectado: ${RUNTIME_ENV}"
+    log "Gestor de servicios detectado: ${SERVICE_MANAGER:-ninguno}"
+}
+
+require_runtime_support() {
+    if [ -n "${SERVICE_MANAGER}" ]; then
+        return
+    fi
+
+    if [ "${THL_NO_SYSTEMD}" = "1" ]; then
+        die "Se forzo modo sin systemd, pero no existe el comando 'service'. Instala init-system-helpers/sysvinit o ejecuta en un host con systemd."
+    fi
+
+    die "No se detecto un gestor de servicios compatible. Este instalador necesita systemd o el comando 'service'."
+}
+
+service_script_name() {
+    local service="$1"
+    case "${service}" in
+        postgresql@*-main)
+            echo "postgresql"
+            ;;
+        *)
+            echo "${service}"
+            ;;
+    esac
+}
+
+service_script_exists() {
+    local service="$1"
+    local script_name
+    script_name="$(service_script_name "${service}")"
+    [ -f "/etc/init.d/${script_name}" ] || [ -x "/etc/init.d/${script_name}" ]
+}
+
+service_is_active() {
+    local service="$1"
+    local script_name
+
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        systemctl is-active --quiet "${service}"
+        return
+    fi
+
+    script_name="$(service_script_name "${service}")"
+    if ! command -v service >/dev/null 2>&1 || ! service_script_exists "${script_name}"; then
+        return 1
+    fi
+    service "${script_name}" status >/dev/null 2>&1
+}
+
+start_service() {
+    local service="$1"
+    local script_name
+
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        systemctl start "${service}" >/dev/null 2>&1 || true
+        return
+    fi
+
+    script_name="$(service_script_name "${service}")"
+    if command -v service >/dev/null 2>&1 && service_script_exists "${script_name}"; then
+        service "${script_name}" start >/dev/null 2>&1 || true
+    fi
+}
+
+restart_service() {
+    local service="$1"
+    local script_name
+
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        systemctl restart "${service}" >/dev/null 2>&1 || true
+        return
+    fi
+
+    script_name="$(service_script_name "${service}")"
+    if command -v service >/dev/null 2>&1 && service_script_exists "${script_name}"; then
+        service "${script_name}" restart >/dev/null 2>&1 || true
+    fi
+}
+
+reload_service() {
+    local service="$1"
+    local script_name
+
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        systemctl reload "${service}" >/dev/null 2>&1 || systemctl restart "${service}" >/dev/null 2>&1 || true
+        return
+    fi
+
+    script_name="$(service_script_name "${service}")"
+    if command -v service >/dev/null 2>&1 && service_script_exists "${script_name}"; then
+        service "${script_name}" reload >/dev/null 2>&1 || service "${script_name}" restart >/dev/null 2>&1 || true
+    fi
+}
+
+stop_service() {
+    local service="$1"
+    local script_name
+
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        systemctl stop "${service}" >/dev/null 2>&1 || true
+        return
+    fi
+
+    script_name="$(service_script_name "${service}")"
+    if command -v service >/dev/null 2>&1 && service_script_exists "${script_name}"; then
+        service "${script_name}" stop >/dev/null 2>&1 || true
+    fi
+}
+
+enable_service_if_exists() {
+    local service="$1"
+    local script_name
+
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        if systemctl list-unit-files | grep -q "^${service}\.service"; then
+            systemctl enable --now "${service}" >/dev/null 2>&1 || true
+        fi
+        return
+    fi
+
+    script_name="$(service_script_name "${service}")"
+    if command -v service >/dev/null 2>&1 && service_script_exists "${script_name}"; then
+        if command -v update-rc.d >/dev/null 2>&1; then
+            update-rc.d "${script_name}" defaults >/dev/null 2>&1 || true
+        fi
+        if command -v chkconfig >/dev/null 2>&1; then
+            chkconfig --add "${script_name}" >/dev/null 2>&1 || true
+            chkconfig "${script_name}" on >/dev/null 2>&1 || true
+        fi
+        service "${script_name}" start >/dev/null 2>&1 || true
+    fi
 }
 
 get_debian_main_cluster_version() {
@@ -121,11 +291,14 @@ show_postgres_diagnostics() {
     unit="$(postgres_service_unit)"
     cluster_version="$(get_debian_main_cluster_version || true)"
 
-    if is_systemd_available; then
+    if [ "${SERVICE_MANAGER}" = "systemd" ] && is_systemd_available; then
         echo "--- systemctl status ${unit} ---"
         systemctl status "${unit}" --no-pager -l 2>/dev/null || true
         echo "--- journalctl -xeu ${unit} (last 100) ---"
         journalctl -xeu "${unit}" --no-pager -n 100 2>/dev/null || true
+    elif [ "${SERVICE_MANAGER}" = "service" ] && command -v service >/dev/null 2>&1; then
+        echo "--- service postgresql status ---"
+        service postgresql status 2>/dev/null || true
     fi
 
     if command -v pg_lsclusters >/dev/null 2>&1; then
@@ -171,17 +344,13 @@ wait_for_tcp_port() {
     return 1
 }
 
-wait_for_systemd_unit_active() {
+wait_for_service_active() {
     local unit="$1"
     local retries="${2:-60}"
     local i
 
-    if ! is_systemd_available; then
-        return 1
-    fi
-
     for i in $(seq 1 "${retries}"); do
-        if systemctl is-active --quiet "${unit}"; then
+        if service_is_active "${unit}"; then
             return 0
         fi
         sleep 1
@@ -192,13 +361,38 @@ wait_for_systemd_unit_active() {
 
 show_systemd_unit_logs() {
     local unit="$1"
-    if ! is_systemd_available; then
+    local script_name
+
+    if [ "${SERVICE_MANAGER}" = "systemd" ] && is_systemd_available; then
+        echo "--- systemctl status ${unit} ---"
+        systemctl status "${unit}" --no-pager -l 2>/dev/null || true
+        echo "--- journalctl -u ${unit} (last 120) ---"
+        journalctl -u "${unit}" --no-pager -n 120 2>/dev/null || true
         return 0
     fi
-    echo "--- systemctl status ${unit} ---"
-    systemctl status "${unit}" --no-pager -l 2>/dev/null || true
-    echo "--- journalctl -u ${unit} (last 120) ---"
-    journalctl -u "${unit}" --no-pager -n 120 2>/dev/null || true
+
+    if ! command -v service >/dev/null 2>&1; then
+        return 0
+    fi
+
+    script_name="$(service_script_name "${unit}")"
+    echo "--- service ${script_name} status ---"
+    service "${script_name}" status 2>/dev/null || true
+
+    case "${script_name}" in
+        pg_manager)
+            if [ -f "${PG_MANAGER_LOG_FILE}" ]; then
+                echo "--- ${PG_MANAGER_LOG_FILE} (last 120) ---"
+                tail -n 120 "${PG_MANAGER_LOG_FILE}" || true
+            fi
+            ;;
+        pgbouncer)
+            if [ -f /var/log/pgbouncer/pgbouncer.log ]; then
+                echo "--- /var/log/pgbouncer/pgbouncer.log (last 120) ---"
+                tail -n 120 /var/log/pgbouncer/pgbouncer.log || true
+            fi
+            ;;
+    esac
 }
 
 reload_or_restart_postgres_runtime() {
@@ -211,10 +405,92 @@ reload_or_restart_postgres_runtime() {
         return
     fi
 
-    if is_systemd_available; then
-        systemctl reload "$(postgres_service_unit)" >/dev/null 2>&1 || \
-            systemctl restart "$(postgres_service_unit)" >/dev/null 2>&1 || true
+    reload_service "$(postgres_service_unit)"
+}
+
+extract_pg_hba_managed_rules() {
+    local source_file="$1"
+    local target_file="$2"
+
+    : > "${target_file}"
+    [ -f "${source_file}" ] || return 0
+
+    awk -v start="${PG_HBA_MANAGED_START}" -v end="${PG_HBA_MANAGED_END}" '
+        $0 == start {capture=1; next}
+        $0 == end {capture=0; next}
+        capture {print}
+    ' "${source_file}" > "${target_file}" 2>/dev/null || true
+}
+
+rewrite_pg_hba_managed_block() {
+    local pg_hba_path="$1"
+    local managed_rules_file="$2"
+    local tmp_file
+
+    tmp_file="$(mktemp /tmp/thl-sql-pg-hba.XXXXXX)"
+    awk -v start="${PG_HBA_MANAGED_START}" -v end="${PG_HBA_MANAGED_END}" -v rules="${managed_rules_file}" '
+        BEGIN { inside=0; replaced=0 }
+        $0 == start {
+            print start
+            while ((getline line < rules) > 0) {
+                print line
+            }
+            close(rules)
+            print end
+            inside=1
+            replaced=1
+            next
+        }
+        $0 == end {
+            inside=0
+            next
+        }
+        inside { next }
+        { print }
+        END {
+            if (!replaced) {
+                if (NR > 0) {
+                    print ""
+                }
+                print start
+                while ((getline line < rules) > 0) {
+                    print line
+                }
+                close(rules)
+                print end
+            }
+        }
+    ' "${pg_hba_path}" > "${tmp_file}"
+    cat "${tmp_file}" > "${pg_hba_path}"
+    rm -f "${tmp_file}"
+}
+
+prepare_pg_hba_managed_rules() {
+    local pg_hba_path="$1"
+    local legacy_include_path="$2"
+    local include_line="include_if_exists ${legacy_include_path}"
+    local quoted_include_line="include_if_exists '${legacy_include_path}'"
+    local tmp_clean rules_file current_rules_file
+
+    tmp_clean="$(mktemp /tmp/thl-sql-pg-hba-clean.XXXXXX)"
+    rules_file="$(mktemp /tmp/thl-sql-pg-hba-rules.XXXXXX)"
+    current_rules_file="$(mktemp /tmp/thl-sql-pg-hba-current.XXXXXX)"
+
+    extract_pg_hba_managed_rules "${pg_hba_path}" "${current_rules_file}"
+    if [ -s "${current_rules_file}" ]; then
+        cat "${current_rules_file}" > "${rules_file}"
+    elif [ -f "${legacy_include_path}" ]; then
+        cat "${legacy_include_path}" > "${rules_file}"
+    else
+        : > "${rules_file}"
     fi
+
+    grep -Fvx "${include_line}" "${pg_hba_path}" | grep -Fvx "${quoted_include_line}" > "${tmp_clean}" || true
+    cat "${tmp_clean}" > "${pg_hba_path}"
+
+    rewrite_pg_hba_managed_block "${pg_hba_path}" "${rules_file}"
+
+    rm -f "${tmp_clean}" "${rules_file}" "${current_rules_file}"
 }
 
 select_python_for_venv() {
@@ -279,7 +555,7 @@ collect_failure_diagnostics() {
         free -m || true
         echo ""
         echo "[Service State]"
-        if is_systemd_available; then
+        if [ "${SERVICE_MANAGER}" = "systemd" ] && is_systemd_available; then
             systemctl is-active "${postgres_unit}" pgbouncer haproxy pg_manager nginx 2>/dev/null || true
             for svc in "${postgres_unit}" pgbouncer haproxy pg_manager nginx; do
                 echo ""
@@ -288,8 +564,14 @@ collect_failure_diagnostics() {
                 echo "--- journalctl -u ${svc} (last 120) ---"
                 journalctl -u "${svc}" --no-pager -n 120 2>/dev/null || true
             done
+        elif [ "${SERVICE_MANAGER}" = "service" ] && command -v service >/dev/null 2>&1; then
+            for svc in postgresql pgbouncer haproxy pg_manager nginx; do
+                echo ""
+                echo "--- service ${svc} status ---"
+                service "${svc}" status 2>/dev/null || true
+            done
         else
-            echo "systemd no disponible en este entorno."
+            echo "No hay gestor de servicios disponible para diagnostico detallado."
         fi
         echo ""
         echo "[PostgreSQL diagnostics]"
@@ -346,15 +628,7 @@ require_root() {
 }
 
 require_systemd() {
-    if is_systemd_available; then
-        return
-    fi
-
-    if [ "${THL_NO_SYSTEMD}" = "1" ]; then
-        die "Entorno sin systemd detectado. Aun no hay fallback automatico para supervisord/init. Usa un VPS o VM con systemd, o despliega manualmente PostgreSQL, PgBouncer, HAProxy, Nginx y pg_manager."
-    fi
-
-    die "Error: este instalador requiere systemd. Si estas en contenedor/CI/LXC sin systemd, reintenta con --no-systemd para ver guia especifica."
+    require_runtime_support
 }
 
 validate_install_settings() {
@@ -677,8 +951,10 @@ debian_recover_postgres_cluster() {
 
     for attempt in $(seq 1 3); do
         warn "Recuperacion PostgreSQL Debian (${attempt}/3)..."
-        systemctl daemon-reload >/dev/null 2>&1 || true
-        systemctl restart postgresql >/dev/null 2>&1 || true
+        if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        restart_service postgresql
 
         while read -r ver name port status owner data logf; do
             [ -n "${ver}" ] || continue
@@ -722,7 +998,7 @@ resolve_postgres_port_with_recovery() {
                 return 0
             fi
         else
-            systemctl restart postgresql >/dev/null 2>&1 || true
+            restart_service postgresql
             sleep 2
         fi
     done
@@ -740,8 +1016,24 @@ resolve_postgres_port_with_recovery() {
 
 disable_service_if_exists() {
     local svc="$1"
-    if systemctl list-unit-files | grep -q "^${svc}\.service"; then
-        systemctl disable --now "${svc}" >/dev/null 2>&1 || true
+    local script_name
+
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        if systemctl list-unit-files | grep -q "^${svc}\.service"; then
+            systemctl disable --now "${svc}" >/dev/null 2>&1 || true
+        fi
+        return
+    fi
+
+    script_name="$(service_script_name "${svc}")"
+    if command -v service >/dev/null 2>&1 && service_script_exists "${script_name}"; then
+        service "${script_name}" stop >/dev/null 2>&1 || true
+        if command -v update-rc.d >/dev/null 2>&1; then
+            update-rc.d -f "${script_name}" remove >/dev/null 2>&1 || true
+        fi
+        if command -v chkconfig >/dev/null 2>&1; then
+            chkconfig --del "${script_name}" >/dev/null 2>&1 || true
+        fi
     fi
 }
 
@@ -818,7 +1110,9 @@ perform_destructive_cleanup() {
     remove_dir_if_exists_safe /var/lib/pgsql
 
     package_remove_stack
-    systemctl daemon-reload || true
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        systemctl daemon-reload || true
+    fi
 
     if [ -n "${EXISTING_ENV_BACKUP}" ] && [ -f "${EXISTING_ENV_BACKUP}" ]; then
         rm -f "${EXISTING_ENV_BACKUP}" || true
@@ -916,7 +1210,11 @@ detect_os() {
     if [[ "${os_name}" =~ (debian|ubuntu) ]] || [[ "${os_like}" =~ (debian|ubuntu) ]]; then
         OS_FAMILY="debian"
         PKG_TOOL="apt"
-        FIREWALL_BACKEND="ufw"
+        if [ "${RUNTIME_ENV}" = "container" ]; then
+            FIREWALL_BACKEND="none"
+        else
+            FIREWALL_BACKEND="ufw"
+        fi
         return
     fi
 
@@ -927,7 +1225,11 @@ detect_os() {
         else
             PKG_TOOL="yum"
         fi
-        FIREWALL_BACKEND="firewalld"
+        if [ "${RUNTIME_ENV}" = "container" ]; then
+            FIREWALL_BACKEND="none"
+        else
+            FIREWALL_BACKEND="firewalld"
+        fi
         return
     fi
 
@@ -1056,35 +1358,44 @@ pkg_install_optional() {
     }
 }
 
-enable_service_if_exists() {
-    local service="$1"
-    if systemctl list-unit-files | grep -q "^${service}\.service"; then
-        systemctl enable --now "${service}" >/dev/null 2>&1 || true
-    fi
-}
-
 install_prerequisites() {
     log "[1/11] Instalando dependencias del sistema..."
+    local debian_packages
+    local rhel_packages
+
     pkg_update
     pkg_upgrade_system
 
     if [ "${OS_FAMILY}" = "debian" ]; then
-        pkg_install_critical bash ca-certificates curl git tar sudo openssl python3 python3-venv python3-pip \
-            nginx postgresql postgresql-contrib pgbouncer haproxy ufw cron
+        debian_packages=(
+            bash ca-certificates curl git tar sudo openssl python3 python3-venv python3-pip
+            nginx postgresql postgresql-contrib pgbouncer haproxy
+        )
+        if [ "${RUNTIME_ENV}" != "container" ]; then
+            debian_packages+=(ufw cron)
+        fi
+        pkg_install_critical "${debian_packages[@]}"
 
         pkg_install_optional gnupg lsb-release software-properties-common || true
     else
         if [ "${PKG_TOOL}" = "dnf" ]; then
             dnf install -y epel-release >/dev/null 2>&1 || true
         fi
-        pkg_install_critical bash ca-certificates curl git tar sudo openssl python3 python3-pip python3-virtualenv \
-            nginx postgresql-server postgresql-contrib pgbouncer haproxy firewalld \
-            cronie
+        rhel_packages=(
+            bash ca-certificates curl git tar sudo openssl python3 python3-pip python3-virtualenv
+            nginx postgresql-server postgresql-contrib pgbouncer haproxy
+        )
+        if [ "${RUNTIME_ENV}" != "container" ]; then
+            rhel_packages+=(firewalld cronie)
+        fi
+        pkg_install_critical "${rhel_packages[@]}"
     fi
 
     enable_service_if_exists nginx
-    enable_service_if_exists crond
-    enable_service_if_exists cron
+    if [ "${RUNTIME_ENV}" != "container" ]; then
+        enable_service_if_exists crond
+        enable_service_if_exists cron
+    fi
 }
 
 install_bootstrap_tools() {
@@ -1228,6 +1539,8 @@ ensure_repo_source() {
     export THL_ACTION
     export THL_FORCE
     export THL_AUTO_CACHE_CLEAN
+    export THL_NO_SYSTEMD
+    export THL_PYTHON_BIN
 
     exec bash "${BOOTSTRAP_DIR}/install.sh"
 }
@@ -1359,6 +1672,8 @@ show_summary() {
     echo -e "${CYAN}  Resumen de instalacion${NC}"
     echo -e "${CYAN}========================================${NC}"
     echo "  OS family:       ${OS_FAMILY}"
+    echo "  Runtime env:     ${RUNTIME_ENV}"
+    echo "  Service mgr:     ${SERVICE_MANAGER}"
     echo "  Firewall:        ${FIREWALL_BACKEND}"
     echo "  Admin user:      ${ADMIN_USERNAME}"
     echo "  Panel URL:       ${APP_URL}"
@@ -1383,6 +1698,8 @@ write_install_summary_file() {
     {
         echo "THL SQL - Resumen de instalacion"
         echo "Modo: ${INSTALL_ACTION}"
+        echo "Entorno: ${RUNTIME_ENV}"
+        echo "Gestor de servicios: ${SERVICE_MANAGER}"
         echo "Panel URL: ${APP_URL}"
         echo "Admin user: ${ADMIN_USERNAME}"
         if [ "${EXISTING_INSTALL}" = "1" ]; then
@@ -1403,7 +1720,11 @@ write_install_summary_file() {
 
 configure_dns() {
     log "[2/11] Ajustando DNS del sistema..."
-    if systemctl is-active --quiet systemd-resolved; then
+    if [ "${RUNTIME_ENV}" = "container" ]; then
+        log "Entorno contenedor detectado: se omite ajuste de DNS del host."
+        return
+    fi
+    if is_systemd_available && systemctl is-active --quiet systemd-resolved; then
         if ! grep -q "^DNS=8.8.8.8 8.8.4.4" /etc/systemd/resolved.conf 2>/dev/null; then
             if grep -q "^#DNS=" /etc/systemd/resolved.conf; then
                 sed -i 's/^#DNS=.*/DNS=8.8.8.8 8.8.4.4/' /etc/systemd/resolved.conf
@@ -1431,6 +1752,9 @@ configure_postgres_service() {
     local pg_port=""
     local pg_password_sql
     local cluster_version
+    local pg_conf
+    local pg_hba
+    local pg_hba_include
     local i
 
     if [ "${OS_FAMILY}" = "rhel" ] && [ ! -f /var/lib/pgsql/data/PG_VERSION ]; then
@@ -1440,7 +1764,8 @@ configure_postgres_service() {
     fi
 
     ensure_debian_postgres_cluster
-    systemctl enable --now postgresql >/dev/null 2>&1 || systemctl restart postgresql
+    enable_service_if_exists postgresql
+    start_service postgresql
     ensure_debian_postgres_cluster
 
     pg_port="$(resolve_postgres_port_with_recovery || true)"
@@ -1461,7 +1786,6 @@ configure_postgres_service() {
         die "No se pudo actualizar password de postgres en puerto ${pg_port}."
     fi
 
-    local pg_conf pg_hba pg_hba_include
     pg_conf="$(find /etc/postgresql /var/lib/pgsql -name postgresql.conf 2>/dev/null | head -1 || true)"
     pg_hba="$(find /etc/postgresql /var/lib/pgsql -name pg_hba.conf 2>/dev/null | head -1 || true)"
 
@@ -1474,13 +1798,10 @@ configure_postgres_service() {
     fi
 
     pg_hba_include="$(dirname "${pg_hba}")/pg_hba_sql_manager.conf"
-    touch "${pg_hba_include}"
-    chown postgres:postgres "${pg_hba_include}"
-    chmod 640 "${pg_hba_include}"
-
-    if ! grep -q "include_if_exists ${pg_hba_include}" "${pg_hba}"; then
-        echo "include_if_exists ${pg_hba_include}" >> "${pg_hba}"
-    fi
+    prepare_pg_hba_managed_rules "${pg_hba}" "${pg_hba_include}"
+    touch "${pg_hba_include}" 2>/dev/null || true
+    chown postgres:postgres "${pg_hba}" "${pg_hba_include}" >/dev/null 2>&1 || true
+    chmod 640 "${pg_hba}" "${pg_hba_include}" >/dev/null 2>&1 || true
 
     reload_or_restart_postgres_runtime
     wait_for_postgres_access "${pg_port}" 60 || true
@@ -1558,6 +1879,8 @@ write_env_file() {
     set_env_key "${env_file_path}" "PUBLIC_DB_HOST" "${PUBLIC_DB_HOST}"
     set_env_key "${env_file_path}" "ALLOWED_ORIGINS" "${ALLOWED_ORIGINS}"
     set_env_key "${env_file_path}" "COOKIE_SECURE" "${COOKIE_SECURE}"
+    set_env_key "${env_file_path}" "RUNTIME_ENV" "${RUNTIME_ENV}"
+    set_env_key "${env_file_path}" "SERVICE_MANAGER" "${SERVICE_MANAGER}"
 
     if [ "${EXISTING_INSTALL}" = "1" ] && [ "${THL_PRESERVE_EXISTING}" = "1" ]; then
         ensure_env_key "${env_file_path}" "COOKIE_NAME" "access_token"
@@ -1587,7 +1910,7 @@ write_env_file() {
         ensure_env_key "${env_file_path}" "SESSION_TTL_SEC" "86400"
         ensure_env_key "${env_file_path}" "TRUSTED_PROXY" "true"
         ensure_env_key "${env_file_path}" "ALLOWED_PORTS" "22,80,443,5432"
-        ensure_env_key "${env_file_path}" "FIREWALL_BACKEND" "auto"
+        set_env_key "${env_file_path}" "FIREWALL_BACKEND" "${FIREWALL_BACKEND}"
         ensure_env_key "${env_file_path}" "ENCRYPTION_KEY" "${encryption_key}"
     else
         set_env_key "${env_file_path}" "COOKIE_NAME" "access_token"
@@ -1617,7 +1940,7 @@ write_env_file() {
         set_env_key "${env_file_path}" "SESSION_TTL_SEC" "86400"
         set_env_key "${env_file_path}" "TRUSTED_PROXY" "true"
         set_env_key "${env_file_path}" "ALLOWED_PORTS" "22,80,443,5432"
-        set_env_key "${env_file_path}" "FIREWALL_BACKEND" "auto"
+        set_env_key "${env_file_path}" "FIREWALL_BACKEND" "${FIREWALL_BACKEND}"
         set_env_key "${env_file_path}" "ENCRYPTION_KEY" "${encryption_key}"
     fi
 
@@ -1636,8 +1959,10 @@ configure_sql_stack() {
 }
 
 configure_systemd_service() {
-    log "[8/11] Configurando servicio systemd..."
-    cat > /etc/systemd/system/pg_manager.service <<SVCEOF
+    log "[8/11] Configurando servicio de la aplicacion..."
+
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        cat > /etc/systemd/system/pg_manager.service <<SVCEOF
 [Unit]
 Description=THL SQL Manager Web App
 After=network.target postgresql.service
@@ -1654,9 +1979,117 @@ RestartSec=5
 WantedBy=multi-user.target
 SVCEOF
 
-    systemctl daemon-reload
-    systemctl enable --now pg_manager
-    systemctl restart pg_manager
+        systemctl daemon-reload
+        systemctl enable --now pg_manager
+        systemctl restart pg_manager
+        return
+    fi
+
+    cat > /etc/init.d/pg_manager <<SVCEOF
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          pg_manager
+# Required-Start:    \$network \$local_fs postgresql
+# Required-Stop:     \$network \$local_fs postgresql
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: THL SQL Manager Web App
+### END INIT INFO
+
+APP_DIR="${APP_DIR}"
+BACKEND_DIR="${APP_DIR}/backend"
+ENV_FILE="${APP_DIR}/backend/.env"
+PID_FILE="${PG_MANAGER_PID_FILE}"
+LOG_FILE="${PG_MANAGER_LOG_FILE}"
+UVICORN_BIN="${APP_DIR}/venv/bin/uvicorn"
+PYTHON_BIN="${APP_DIR}/venv/bin/python3"
+PORT="${BACKEND_BIND_PORT}"
+
+is_running() {
+    if [ ! -f "\${PID_FILE}" ]; then
+        return 1
+    fi
+    PID="\$(cat "\${PID_FILE}" 2>/dev/null || true)"
+    [ -n "\${PID}" ] || return 1
+    kill -0 "\${PID}" >/dev/null 2>&1
+}
+
+start_service() {
+    if is_running; then
+        echo "pg_manager ya esta en ejecucion"
+        return 0
+    fi
+    mkdir -p "\$(dirname "\${PID_FILE}")" "\$(dirname "\${LOG_FILE}")"
+    cd "\${BACKEND_DIR}" || exit 1
+    THL_ENV_FILE="\${ENV_FILE}" THL_BACKEND_DIR="\${BACKEND_DIR}" THL_UVICORN_BIN="\${UVICORN_BIN}" THL_PORT="\${PORT}" \
+        nohup "\${PYTHON_BIN}" - >> "\${LOG_FILE}" 2>&1 <<'PY' &
+import os
+from dotenv import dotenv_values
+
+env = os.environ.copy()
+env_path = env.get("THL_ENV_FILE")
+backend_dir = env.get("THL_BACKEND_DIR")
+uvicorn_bin = env.get("THL_UVICORN_BIN")
+port = env.get("THL_PORT", "8000")
+
+if env_path:
+    for key, value in dotenv_values(env_path).items():
+        if value is not None:
+            env[key] = value
+
+if backend_dir:
+    os.chdir(backend_dir)
+
+os.execve(uvicorn_bin, [uvicorn_bin, "main:app", "--host", "127.0.0.1", "--port", port], env)
+PY
+    echo \$! > "\${PID_FILE}"
+    sleep 1
+    is_running
+}
+
+stop_service() {
+    if ! is_running; then
+        rm -f "\${PID_FILE}" >/dev/null 2>&1 || true
+        return 0
+    fi
+    PID="\$(cat "\${PID_FILE}" 2>/dev/null || true)"
+    kill "\${PID}" >/dev/null 2>&1 || true
+    sleep 1
+    if kill -0 "\${PID}" >/dev/null 2>&1; then
+        kill -9 "\${PID}" >/dev/null 2>&1 || true
+    fi
+    rm -f "\${PID_FILE}" >/dev/null 2>&1 || true
+}
+
+case "\${1:-}" in
+    start)
+        start_service
+        ;;
+    stop)
+        stop_service
+        ;;
+    restart)
+        stop_service
+        start_service
+        ;;
+    status)
+        if is_running; then
+            echo "pg_manager is running"
+            exit 0
+        fi
+        echo "pg_manager is stopped"
+        exit 3
+        ;;
+    *)
+        echo "Uso: /etc/init.d/pg_manager {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+SVCEOF
+
+    chmod 755 /etc/init.d/pg_manager
+    enable_service_if_exists pg_manager
+    restart_service pg_manager
 }
 
 wait_for_http_endpoint() {
@@ -1684,7 +2117,7 @@ verify_admin_login() {
     [ -n "${admin_pass}" ] || die "ADMIN_PASSWORD vacio en ${env_file}."
 
     if ! wait_for_http_endpoint "http://127.0.0.1:${BACKEND_BIND_PORT}/login" 45; then
-        journalctl -u pg_manager --no-pager -n 120 || true
+        show_systemd_unit_logs pg_manager
         die "pg_manager no responde en /login tras iniciar servicio."
     fi
 
@@ -1698,7 +2131,7 @@ verify_admin_login() {
 
     if [ "${http_code}" != "200" ]; then
         warn "Verificacion login admin fallo (HTTP ${http_code}). Reintentando tras reinicio de pg_manager..."
-        systemctl restart pg_manager || true
+        restart_service pg_manager
         sleep 2
         http_code="$(curl -sS -o "${tmp_resp}" -w "%{http_code}" \
             -H "Content-Type: application/json" \
@@ -1709,7 +2142,7 @@ verify_admin_login() {
     if [ "${http_code}" != "200" ]; then
         cat "${tmp_resp}" >&2 || true
         rm -f "${tmp_resp}" || true
-        journalctl -u pg_manager --no-pager -n 120 || true
+        show_systemd_unit_logs pg_manager
         die "Credencial admin no valida en la app (HTTP ${http_code})."
     fi
 
@@ -1746,7 +2179,7 @@ server {
 }
 NGEOF
         nginx -t
-        systemctl reload nginx
+        reload_service nginx
 
         pkg_install_optional certbot python3-certbot-nginx || true
 
@@ -1783,7 +2216,7 @@ server {
 }
 NGEOF
         nginx -t
-        systemctl reload nginx
+        reload_service nginx
     fi
 
     if ! wait_for_http_endpoint "${nginx_local_url}" 60; then
@@ -1794,6 +2227,10 @@ NGEOF
 
 configure_firewall() {
     log "[10/11] Configurando firewall (${FIREWALL_BACKEND})..."
+    if [ "${FIREWALL_BACKEND}" = "none" ]; then
+        log "Firewall omitido para este entorno (${RUNTIME_ENV})."
+        return
+    fi
     if [ "${FIREWALL_BACKEND}" = "ufw" ]; then
         ufw allow 22/tcp >/dev/null 2>&1 || true
         if [ "${USE_DOMAIN}" = "true" ]; then
@@ -1806,7 +2243,8 @@ configure_firewall() {
         return
     fi
 
-    systemctl enable --now firewalld >/dev/null 2>&1 || true
+    enable_service_if_exists firewalld
+    start_service firewalld
     firewall-cmd --permanent --add-service=ssh >/dev/null 2>&1 || true
     if [ "${USE_DOMAIN}" = "true" ]; then
         firewall-cmd --permanent --add-port=80/tcp >/dev/null 2>&1 || true
@@ -1819,6 +2257,12 @@ configure_firewall() {
 
 configure_watchdog() {
     log "[11/11] Configurando watchdog..."
+    if [ "${RUNTIME_ENV}" = "container" ]; then
+        log "Entorno contenedor detectado: se omite watchdog basado en cron."
+        remove_watchdog_cron
+        remove_file_if_exists /usr/local/bin/pg_manager_watchdog.sh
+        return
+    fi
     cp "${APP_DIR}/server/pg_manager_watchdog.sh" /usr/local/bin/pg_manager_watchdog.sh
     chmod +x /usr/local/bin/pg_manager_watchdog.sh
 
@@ -1870,8 +2314,8 @@ verify_stack_health() {
     fi
     echo -e "${GREEN}[OK] Nginx responde en ${nginx_local_url}${NC}"
 
-    if is_systemd_available; then
-        if ! wait_for_systemd_unit_active haproxy 60; then
+    if [ -n "${SERVICE_MANAGER}" ]; then
+        if ! wait_for_service_active haproxy 60; then
             show_systemd_unit_logs haproxy
             die "Health check fallo: HAProxy no esta activo."
         fi
@@ -1885,8 +2329,10 @@ verify_stack_health() {
 
 final_report() {
     local services="n/a"
-    if is_systemd_available; then
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
         services="$(systemctl is-active "$(postgres_service_unit)" pgbouncer haproxy pg_manager nginx 2>/dev/null || true)"
+    elif [ "${SERVICE_MANAGER}" = "service" ]; then
+        services="service-mode"
     fi
     write_install_summary_file
 
@@ -1912,10 +2358,16 @@ final_report() {
         echo "Modo UX:        habilitado (sin prompts)."
     fi
     echo "Firewall:       ${FIREWALL_BACKEND}"
+    echo "Entorno:        ${RUNTIME_ENV}"
+    echo "Servicios via:  ${SERVICE_MANAGER}"
     echo "Servicios:      ${services}"
     echo "Credenciales:   ${APP_DIR}/backend/.env"
     echo "Resumen UX:     ${THL_INSTALL_SUMMARY_FILE}"
-    echo "Logs app:       journalctl -u pg_manager -f"
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        echo "Logs app:       journalctl -u pg_manager -f"
+    else
+        echo "Logs app:       tail -f ${PG_MANAGER_LOG_FILE}"
+    fi
     echo "Health SQL:     ss -ltn '( sport = :5432 or sport = :${PGBOUNCER_INTERNAL_PORT} or sport = :${POSTGRES_INTERNAL_PORT} )'"
     echo -e "${GREEN}========================================${NC}"
 }
@@ -1930,13 +2382,14 @@ main() {
     run_install_step "P1" "Validando configuracion del instalador" validate_install_settings
     run_install_step "P2" "Validando permisos root" require_root
     run_install_step "P3" "Inicializando logging" init_install_logging
-    run_install_step "P4" "Validando systemd" require_systemd
-    run_install_step "P5" "Detectando sistema operativo" detect_os
-    run_install_step "P6" "Limpieza automatica de cache" auto_cleanup_cache
-    run_install_step "P7" "Preparando fuente del repositorio" ensure_repo_source
-    run_install_step "P8" "Detectando instalacion existente" detect_existing_installation
-    run_install_step "P9" "Seleccionando modo de instalacion" select_install_action
-    run_install_step "P10" "Aplicando accion de instalacion" handle_install_action
+    run_install_step "P4" "Detectando entorno de ejecucion" detect_runtime_context
+    run_install_step "P5" "Validando gestor de servicios" require_runtime_support
+    run_install_step "P6" "Detectando sistema operativo" detect_os
+    run_install_step "P7" "Limpieza automatica de cache" auto_cleanup_cache
+    run_install_step "P8" "Preparando fuente del repositorio" ensure_repo_source
+    run_install_step "P9" "Detectando instalacion existente" detect_existing_installation
+    run_install_step "P10" "Seleccionando modo de instalacion" select_install_action
+    run_install_step "P11" "Aplicando accion de instalacion" handle_install_action
     run_install_step "1/11" "Instalando dependencias del sistema" install_prerequisites
     run_install_step "INPUT" "Recolectando parametros de instalacion" collect_input
     run_install_step "RESUMEN" "Mostrando resumen de instalacion" show_summary
@@ -1946,7 +2399,7 @@ main() {
     run_install_step "5/11" "Instalando dependencias Python" setup_python_env
     run_install_step "6/11" "Generando archivo .env" write_env_file
     run_install_step "7/11" "Configurando stack SQL" configure_sql_stack
-    run_install_step "8/11" "Configurando servicio systemd" configure_systemd_service
+    run_install_step "8/11" "Configurando servicio de la aplicacion" configure_systemd_service
     run_install_step "8b/11" "Validando login admin" verify_admin_login
     run_install_step "9/11" "Configurando Nginx" configure_nginx
     run_install_step "10/11" "Configurando firewall" configure_firewall
