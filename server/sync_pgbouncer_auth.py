@@ -1,5 +1,6 @@
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -80,13 +81,42 @@ def build_auth_content(passwords: dict[str, str]) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
+def is_systemd_available() -> bool:
+    return os.path.isdir("/run/systemd/system") and shutil.which("systemctl") is not None
+
+
+def detect_service_manager() -> str:
+    configured = os.getenv("SERVICE_MANAGER", "").strip().lower()
+    if configured in {"systemd", "service"}:
+        return configured
+    if is_systemd_available():
+        return "systemd"
+    if shutil.which("service"):
+        return "service"
+    return "unknown"
+
+
 def reload_pgbouncer() -> None:
-    result = subprocess.run(["systemctl", "reload", "pgbouncer"], capture_output=True, text=True)
-    if result.returncode == 0:
+    service_manager = detect_service_manager()
+    if service_manager == "systemd":
+        result = subprocess.run(["systemctl", "reload", "pgbouncer"], capture_output=True, text=True)
+        if result.returncode == 0:
+            return
+        restart_result = subprocess.run(["systemctl", "restart", "pgbouncer"], capture_output=True, text=True)
+        if restart_result.returncode != 0:
+            raise RuntimeError(restart_result.stderr.strip() or "No se pudo reiniciar pgbouncer")
         return
-    restart_result = subprocess.run(["systemctl", "restart", "pgbouncer"], capture_output=True, text=True)
-    if restart_result.returncode != 0:
-        raise RuntimeError(restart_result.stderr.strip() or "No se pudo reiniciar pgbouncer")
+
+    if service_manager == "service":
+        result = subprocess.run(["service", "pgbouncer", "reload"], capture_output=True, text=True)
+        if result.returncode == 0:
+            return
+        restart_result = subprocess.run(["service", "pgbouncer", "restart"], capture_output=True, text=True)
+        if restart_result.returncode != 0:
+            raise RuntimeError(restart_result.stderr.strip() or "No se pudo reiniciar pgbouncer")
+        return
+
+    raise RuntimeError("No se detecto un gestor de servicios compatible para recargar PgBouncer")
 
 
 def main() -> int:

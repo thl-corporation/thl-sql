@@ -76,10 +76,48 @@ def detect_pg_hba_path():
 
 
 PG_HBA_PATH = detect_pg_hba_path()
-PG_HBA_INCLUDE_PATH = os.getenv(
-    "PG_HBA_INCLUDE_PATH",
-    os.path.join(os.path.dirname(PG_HBA_PATH), "pg_hba_sql_manager.conf"),
-)
+PG_HBA_MANAGED_START = os.getenv("PG_HBA_MANAGED_START", "# BEGIN THL SQL MANAGED RULES")
+PG_HBA_MANAGED_END = os.getenv("PG_HBA_MANAGED_END", "# END THL SQL MANAGED RULES")
+
+
+def is_container_environment():
+    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+        return True
+    for candidate in ("/proc/1/cgroup", "/proc/1/environ"):
+        try:
+            with open(candidate, "rb") as handle:
+                content = handle.read().decode("utf-8", errors="ignore")
+        except OSError:
+            continue
+        if re.search(r"(docker|containerd|kubepods|podman|lxc)", content):
+            return True
+    return False
+
+
+def is_systemd_available():
+    return os.path.isdir("/run/systemd/system") and shutil.which("systemctl") is not None
+
+
+def detect_runtime_environment():
+    configured = os.getenv("RUNTIME_ENV", "").strip().lower()
+    if configured in ("container", "host"):
+        return configured
+    return "container" if is_container_environment() else "host"
+
+
+def detect_service_manager():
+    configured = os.getenv("SERVICE_MANAGER", "").strip().lower()
+    if configured in ("systemd", "service"):
+        return configured
+    if is_systemd_available():
+        return "systemd"
+    if shutil.which("service"):
+        return "service"
+    return "unknown"
+
+
+RUNTIME_ENV = detect_runtime_environment()
+SERVICE_MANAGER = detect_service_manager()
 
 # Auth Configuration
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
@@ -167,6 +205,74 @@ def get_python_executable():
         return deployed_python
     return sys.executable
 
+
+def service_script_name(service_name: str):
+    if service_name.startswith("postgresql@"):
+        return "postgresql"
+    return service_name
+
+
+def is_process_running(process_names: set[str]):
+    normalized = {name.lower() for name in process_names}
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        try:
+            name = (proc.info.get("name") or "").lower()
+            if name in normalized:
+                return True
+            cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+            if any(token in cmdline for token in normalized):
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    return False
+
+
+def get_debian_cluster_version():
+    match = re.search(r"/etc/postgresql/(\d+)/main/pg_hba\.conf$", PG_HBA_PATH)
+    if match:
+        return match.group(1)
+    if not shutil.which("pg_lsclusters"):
+        return None
+    result = subprocess.run(["pg_lsclusters", "--no-header"], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[1] == "main":
+            return fields[0]
+    return None
+
+
+def postgres_systemd_unit():
+    cluster_version = get_debian_cluster_version()
+    if cluster_version:
+        return f"postgresql@{cluster_version}-main"
+    return "postgresql"
+
+
+def reload_postgres_runtime():
+    cluster_version = get_debian_cluster_version()
+    if cluster_version and shutil.which("pg_ctlcluster"):
+        result = run_sudo_command(["pg_ctlcluster", cluster_version, "main", "reload"])
+        if result.returncode == 0:
+            return
+        run_sudo_command(["pg_ctlcluster", cluster_version, "main", "restart"])
+        return
+
+    if SERVICE_MANAGER == "systemd":
+        unit = postgres_systemd_unit()
+        result = run_sudo_command(["systemctl", "reload", unit])
+        if result.returncode != 0:
+            restart_result = run_sudo_command(["systemctl", "restart", unit])
+            if restart_result.returncode != 0 and unit != "postgresql":
+                run_sudo_command(["systemctl", "restart", "postgresql"])
+        return
+
+    if SERVICE_MANAGER == "service":
+        result = run_sudo_command(["service", "postgresql", "reload"])
+        if result.returncode != 0:
+            run_sudo_command(["service", "postgresql", "restart"])
+
 def sync_pgbouncer_auth():
     if not POOLING_ENABLED:
         return True
@@ -194,10 +300,32 @@ def get_pgbouncer_connection():
     return conn
 
 def get_service_status(service_name: str):
-    result = run_sudo_command(["systemctl", "is-active", service_name])
-    if result.returncode != 0:
-        return "unknown"
-    return result.stdout.strip() or "unknown"
+    if SERVICE_MANAGER == "systemd":
+        result = run_sudo_command(["systemctl", "is-active", service_name])
+        if result.returncode != 0:
+            return "unknown"
+        return result.stdout.strip() or "unknown"
+
+    if SERVICE_MANAGER == "service":
+        result = run_sudo_command(["service", service_script_name(service_name), "status"])
+        output = f"{result.stdout}\n{result.stderr}".strip().lower()
+        if result.returncode == 0:
+            return "active"
+        if any(token in output for token in ("inactive", "stopped", "not running", "failed")):
+            return "inactive"
+        if "running" in output or "started" in output:
+            return "active"
+
+    process_map = {
+        "haproxy": {"haproxy"},
+        "pgbouncer": {"pgbouncer"},
+        "pg_manager": {"uvicorn"},
+        "postgresql": {"postgres"},
+    }
+    process_names = process_map.get(service_name, {service_name})
+    if is_process_running(process_names):
+        return "active"
+    return "unknown"
 
 def get_pooling_snapshot():
     summary = {
@@ -436,7 +564,7 @@ def parse_firewalld_sql_access(output: str):
 
 def detect_firewall_backend():
     preferred = os.getenv("FIREWALL_BACKEND", "").strip().lower()
-    if preferred in ("ufw", "firewalld"):
+    if preferred in ("ufw", "firewalld", "none"):
         return preferred
     if os.path.exists("/usr/sbin/ufw") or os.path.exists("/sbin/ufw") or shutil.which("ufw"):
         return "ufw"
@@ -635,16 +763,29 @@ def write_file_content(path: str, content: str):
                 pass
     return False
 
-def ensure_pg_hba_include():
-    content = read_file_content(PG_HBA_PATH)
-    include_line = f"include_if_exists {PG_HBA_INCLUDE_PATH}"
-    old_include_line = f"include_if_exists '{PG_HBA_INCLUDE_PATH}'"
-    if old_include_line in content:
-        content = content.replace(old_include_line, include_line)
-        write_file_content(PG_HBA_PATH, content)
-    elif include_line not in content:
-        updated = content.rstrip("\n") + "\n" + include_line + "\n"
-        write_file_content(PG_HBA_PATH, updated)
+def strip_legacy_pg_hba_include(content: str):
+    return re.sub(
+        r"(?m)^include_if_exists\s+'?[^'\n]*pg_hba_sql_manager\.conf'?\s*\n?",
+        "",
+        content,
+    )
+
+
+def replace_pg_hba_managed_block(content: str, managed_lines: list[str]):
+    block_lines = [PG_HBA_MANAGED_START]
+    block_lines.extend(managed_lines)
+    block_lines.append(PG_HBA_MANAGED_END)
+    managed_block = "\n".join(block_lines) + "\n"
+    sanitized = strip_legacy_pg_hba_include(content).rstrip("\n")
+    pattern = re.compile(
+        rf"(?ms)^{re.escape(PG_HBA_MANAGED_START)}\n.*?^{re.escape(PG_HBA_MANAGED_END)}\n?",
+        re.MULTILINE,
+    )
+    if pattern.search(sanitized):
+        return pattern.sub(managed_block, sanitized, count=1)
+    if not sanitized:
+        return managed_block
+    return sanitized + "\n\n" + managed_block
 
 def rebuild_pg_hba_rules():
     conn = get_db_connection()
@@ -677,16 +818,10 @@ def rebuild_pg_hba_rules():
         for ip_cidr, db_name, db_user in all_rows:
             lines.append(f"hostssl {db_name} {db_user} {ip_cidr} scram-sha-256")
             lines.append(f"hostnossl {db_name} {db_user} {ip_cidr} md5")
-    ensure_pg_hba_include()
-    content = "\n".join(lines)
-    if content and not content.endswith("\n"):
-        content += "\n"
-    write_file_content(PG_HBA_INCLUDE_PATH, content)
-
-    # Reload Postgres
-    result = run_sudo_command(["systemctl", "reload", "postgresql"])
-    if result.returncode != 0:
-        run_sudo_command(["systemctl", "restart", "postgresql"])
+    current_content = read_file_content(PG_HBA_PATH)
+    updated_content = replace_pg_hba_managed_block(current_content, lines)
+    write_file_content(PG_HBA_PATH, updated_content)
+    reload_postgres_runtime()
 
     # Keep SQL public exposure aligned with metadata.
     set_sql_public_access(has_public)
