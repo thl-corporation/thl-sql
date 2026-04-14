@@ -22,11 +22,18 @@ warn() {
 
 run_as_postgres() {
     local cmd="$1"
+    local postgres_cwd="/tmp"
+    if command -v getent >/dev/null 2>&1; then
+        postgres_cwd="$(getent passwd postgres | cut -d: -f6 || true)"
+    fi
+    if [ -z "${postgres_cwd}" ] || [ ! -d "${postgres_cwd}" ]; then
+        postgres_cwd="/tmp"
+    fi
     if command -v runuser >/dev/null 2>&1; then
-        runuser -u postgres -- sh -c "${cmd}"
+        runuser -u postgres -- sh -c "cd \"${postgres_cwd}\" && ${cmd}"
         return
     fi
-    su -s /bin/sh postgres -c "${cmd}"
+    su -s /bin/sh postgres -c "cd \"${postgres_cwd}\" && ${cmd}"
 }
 
 find_pg_hba() {
