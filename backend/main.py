@@ -43,6 +43,9 @@ app.add_middleware(
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
+ENV_FILE_PATH = os.path.join(BASE_DIR, ".env")
+APP_DEFAULT_NAME = "THL SQL Manager"
+MAX_LOGO_DATA_LENGTH = 512000
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", "5432"))
@@ -288,6 +291,14 @@ class SqlAccessAssignRequest(BaseModel):
     ip: str
     databases: list[str] = Field(default_factory=list, min_length=1)
 
+class ProfileUpdateRequest(BaseModel):
+    app_name: str = Field(..., min_length=2, max_length=80)
+    logo_data: str | None = Field(default=None, max_length=MAX_LOGO_DATA_LENGTH)
+
+class PasswordUpdateRequest(BaseModel):
+    current_password: str | None = None
+    new_password: str = Field(..., min_length=10, max_length=128)
+
 def get_current_username(request: Request):
     session = get_session(request)
     return session["username"]
@@ -342,6 +353,30 @@ def normalize_client_name(value: str, label: str):
     if not re.fullmatch(r"[A-Za-z0-9 _-]{1,80}", cleaned):
         raise HTTPException(status_code=400, detail=f"{label} inválido")
     return cleaned
+
+def normalize_brand_name(value: str):
+    cleaned = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9 _-]{2,80}", cleaned):
+        raise HTTPException(status_code=400, detail="Nombre de marca inválido")
+    return cleaned
+
+def normalize_logo_data(value: str | None):
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if cleaned == "":
+        return None
+    if len(cleaned) > MAX_LOGO_DATA_LENGTH:
+        raise HTTPException(status_code=400, detail="Logo demasiado grande")
+    if not cleaned.startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="Formato de logo inválido")
+    return cleaned
+
+def validate_admin_password_policy(new_password: str):
+    if len(new_password) < 10:
+        raise HTTPException(status_code=400, detail="La nueva contraseña debe tener al menos 10 caracteres")
+    if new_password.strip() != new_password:
+        raise HTTPException(status_code=400, detail="La nueva contraseña no debe iniciar ni terminar con espacios")
 
 def normalize_user_slug(value: str, label: str):
     cleaned = value.strip().lower().replace(" ", "_").replace("-", "_")
@@ -663,6 +698,73 @@ def generate_password(length=24):
     alphabet = string.ascii_letters + string.digits
     return ''.join(secrets.choice(alphabet) for i in range(length))
 
+def dotenv_escape(value: str):
+    escaped = value.replace("\\", "\\\\").replace("\"", "\\\"")
+    escaped = escaped.replace("\n", "\\n")
+    return f"\"{escaped}\""
+
+def persist_env_key(key: str, value: str):
+    line_value = f"{key}={dotenv_escape(value)}"
+    pattern = re.compile(rf"^{re.escape(key)}=")
+    lines = []
+    if os.path.exists(ENV_FILE_PATH):
+        with open(ENV_FILE_PATH, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    replaced = False
+    updated = []
+    for line in lines:
+        if pattern.match(line):
+            updated.append(line_value)
+            replaced = True
+        else:
+            updated.append(line)
+    if not replaced:
+        updated.append(line_value)
+    with open(ENV_FILE_PATH, "w", encoding="utf-8") as f:
+        f.write("\n".join(updated).rstrip("\n") + "\n")
+
+def get_profile_settings():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT app_name, logo_data, password_initialized FROM app_profile_settings WHERE id = 1")
+        row = cur.fetchone()
+        if row:
+            return {
+                "app_name": row[0] or APP_DEFAULT_NAME,
+                "logo_data": row[1],
+                "password_initialized": bool(row[2]),
+            }
+        return {"app_name": APP_DEFAULT_NAME, "logo_data": None, "password_initialized": False}
+    finally:
+        cur.close()
+        conn.close()
+
+def save_profile_settings(app_name: str, logo_data: str | None):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO app_profile_settings (id, app_name, logo_data, password_initialized, updated_at)
+            VALUES (1, %s, %s, FALSE, NOW())
+            ON CONFLICT (id) DO UPDATE
+            SET app_name = EXCLUDED.app_name,
+                logo_data = EXCLUDED.logo_data,
+                updated_at = NOW()
+        """, (app_name, logo_data))
+    finally:
+        cur.close()
+        conn.close()
+
+def mark_password_initialized():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("UPDATE app_profile_settings SET password_initialized = TRUE, updated_at = NOW() WHERE id = 1")
+    finally:
+        cur.close()
+        conn.close()
+
 def get_db_connection():
     try:
         conn = psycopg2.connect(
@@ -719,6 +821,32 @@ def init_metadata_db():
                 UNIQUE (ip_id, db_name)
             );
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_profile_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                app_name TEXT NOT NULL DEFAULT 'THL SQL Manager',
+                logo_data TEXT NULL,
+                password_initialized BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cur.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='app_profile_settings' AND column_name='password_initialized'
+                ) THEN
+                    ALTER TABLE app_profile_settings
+                    ADD COLUMN password_initialized BOOLEAN NOT NULL DEFAULT TRUE;
+                END IF;
+            END $$;
+        """)
+        cur.execute("""
+            INSERT INTO app_profile_settings (id, app_name, logo_data, password_initialized, updated_at)
+            VALUES (1, %s, NULL, FALSE, NOW())
+            ON CONFLICT (id) DO NOTHING;
+        """, (APP_DEFAULT_NAME,))
     except Exception as e:
         print(f"Error initializing metadata DB: {e}")
     finally:
@@ -756,20 +884,23 @@ def login(creds: LoginRequest, response: Response, request: Request):
     if not (correct_username and correct_password):
         raise HTTPException(status_code=400, detail="Usuario o contraseña incorrectos")
     reset_login_rate_limit(request)
-    
+
+    profile_settings = get_profile_settings()
+    force_password_change = not profile_settings.get("password_initialized", False)
+
     session_token = "session_" + secrets.token_urlsafe(32)
     csrf_token = secrets.token_urlsafe(32)
     session_store[session_token] = {
         "username": ADMIN_USERNAME,
         "expires_at": time.time() + SESSION_TTL_SEC,
-        "csrf": csrf_token
+        "csrf": csrf_token,
+        "force_password_change": force_password_change,
     }
 
     response.set_cookie(
         key=COOKIE_NAME,
         value=session_token,
         httponly=True,
-        max_age=SESSION_TTL_SEC,
         samesite="strict",
         secure=COOKIE_SECURE
     )
@@ -777,11 +908,10 @@ def login(creds: LoginRequest, response: Response, request: Request):
         key=CSRF_COOKIE_NAME,
         value=csrf_token,
         httponly=False,
-        max_age=SESSION_TTL_SEC,
         samesite="strict",
         secure=COOKIE_SECURE
     )
-    return {"message": "Login successful"}
+    return {"message": "Login successful", "force_password_change": force_password_change}
 
 @app.post("/logout")
 def logout(response: Response, request: Request, csrf_ok: bool = Depends(require_csrf)):
@@ -791,6 +921,54 @@ def logout(response: Response, request: Request, csrf_ok: bool = Depends(require
     response.delete_cookie(COOKIE_NAME)
     response.delete_cookie(CSRF_COOKIE_NAME)
     return {"message": "Logged out"}
+
+@app.get("/api/profile")
+def get_profile(request: Request, username: str = Depends(get_current_username)):
+    profile = get_profile_settings()
+    session = get_session(request)
+    return {
+        "app_name": profile["app_name"],
+        "logo_data": profile["logo_data"],
+        "admin_username": ADMIN_USERNAME,
+        "force_password_change": bool(session.get("force_password_change", False)),
+    }
+
+@app.put("/api/profile")
+def update_profile(req: ProfileUpdateRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    app_name = normalize_brand_name(req.app_name)
+    logo_data = normalize_logo_data(req.logo_data)
+    save_profile_settings(app_name, logo_data)
+    return {"status": "success", "app_name": app_name, "logo_data": logo_data}
+
+@app.put("/api/profile/password")
+def update_profile_password(req: PasswordUpdateRequest, request: Request, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
+    global ADMIN_PASSWORD
+    session = get_session(request)
+    force_password_change = bool(session.get("force_password_change", False))
+    current_password = req.current_password or ""
+
+    if not force_password_change and not secrets.compare_digest(current_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=400, detail="La contraseña actual es incorrecta")
+    validate_admin_password_policy(req.new_password)
+    if secrets.compare_digest(req.new_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=400, detail="La nueva contraseña debe ser distinta")
+    try:
+        persist_env_key("ADMIN_PASSWORD", req.new_password)
+    except Exception as e:
+        print(f"Error persisting ADMIN_PASSWORD: {e}")
+        raise HTTPException(status_code=500, detail="No se pudo persistir la contraseña")
+    ADMIN_PASSWORD = req.new_password
+    mark_password_initialized()
+
+    current_token = request.cookies.get(COOKIE_NAME)
+    for token in list(session_store.keys()):
+        if token == current_token:
+            session_store[token]["force_password_change"] = False
+            continue
+        if session_store[token].get("username") == ADMIN_USERNAME:
+            del session_store[token]
+
+    return {"status": "success", "message": "Contraseña actualizada correctamente."}
 
 @app.get("/health")
 def health():

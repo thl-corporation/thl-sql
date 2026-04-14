@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest an improvement for THL SQL.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What pain point are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the expected behavior and usage.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Share other approaches you considered.
+    validations:
+      required: false
+  - type: textarea
+    id: impact
+    attributes:
+      label: Operational impact
+      description: Any expected impact on install flow, compatibility, or security.
+    validations:
+      required: false

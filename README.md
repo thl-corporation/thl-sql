@@ -1,23 +1,97 @@
-# thl-sql
+<p align="center">
+  <img src="docs/assets/thl-corporation-logo.png" alt="THL Corporation" width="180">
+</p>
 
-Panel web para administrar PostgreSQL y firewall en VPS Linux, con stack SQL de alto volumen:
+# THL SQL
 
-`Cliente SQL -> HAProxy:5432 -> PgBouncer:6432 -> PostgreSQL:5433`
+Production-ready SQL platform for fast and repeatable Linux deployments.
 
-## Instalacion one-link
+Company: [THL Corporation](https://thlcorporation.com)  
+Contact: `admin@thlcorporation.com`
 
-Ejecutar como `root`:
+## Why THL SQL
+
+- Scales concurrent client traffic with `HAProxy + PgBouncer`.
+- Keeps PostgreSQL isolated on an internal port.
+- Manages SQL access by IP/CIDR from the admin panel.
+- Standardizes Linux setup with a one-command installer.
+
+Operational architecture:
+
+`SQL Client -> HAProxy:5432 -> PgBouncer:6432 -> PostgreSQL:5433`
+
+## Official Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
 ```
 
-El instalador soporta familias:
+Fallback (manual execution with the same installer):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh -o install.sh
+chmod +x install.sh
+./install.sh
+```
+
+Supported families:
 
 - Debian / Ubuntu
 - RHEL / Rocky / AlmaLinux / CentOS
 
-Tambien puedes pasar variables de entorno:
+## Installer Inputs
+
+- `THL_DOMAIN`
+- `THL_BIND_IP`
+- `THL_PORT`
+- `THL_ADMIN_USER`
+- `THL_ADMIN_PASS`
+- `THL_PG_PASSWORD`
+- `THL_NONINTERACTIVE=1`
+- `THL_INSTALL_DEBUG=1` (enables `set -x`)
+- `THL_INSTALL_LOG_FILE=/var/log/thl-sql-install.log`
+- `THL_SYSTEM_UPGRADE_POLICY=none|upgrade|full` (default: `full`)
+- `THL_UX_MODE=1` (default, minimal prompts)
+- `THL_PRESERVE_EXISTING=1` (default, keeps existing credentials/config on upgrade)
+- `THL_ACTION=reinstall|upgrade|uninstall`
+- `THL_FORCE=1` (required for non-interactive destructive actions)
+- `THL_AUTO_CACHE_CLEAN=1` (default, clears package/temp caches automatically)
+
+## Installation Modes (3 options)
+
+1. Full wipe + new install:
+
+```bash
+THL_ACTION=reinstall THL_FORCE=1 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
+
+2. Upgrade in place (preserve credentials/config):
+
+```bash
+THL_ACTION=upgrade curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
+
+3. Uninstall app and all managed data:
+
+```bash
+THL_ACTION=uninstall THL_FORCE=1 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
+
+Interactive one-link behavior:
+
+- If you run `curl ... | bash` from a terminal and do not set `THL_ACTION`, installer shows the 3 options menu automatically.
+- Each installer phase prints `OK` on success; if any phase fails, it auto-generates a diagnostic report in `/var/log/thl-sql-failure-*.log`.
+
+UX one-command with domain (recommended for production):
+
+```bash
+THL_DOMAIN=sql.example.com \
+THL_ADMIN_USER=admin \
+THL_ADMIN_PASS='Change_This_Immediately_123!' \
+curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
+
+Non-interactive example:
 
 ```bash
 THL_ADMIN_USER=admin \
@@ -26,38 +100,39 @@ THL_DOMAIN=sql.example.com \
 curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
 ```
 
-Variables soportadas:
+## Ubuntu Empty VPS Notes
 
-- `THL_DOMAIN` (opcional)
-- `THL_BIND_IP` (si no hay dominio)
-- `THL_PORT` (si no hay dominio)
-- `THL_ADMIN_USER`
-- `THL_ADMIN_PASS`
+Recommended preflight:
 
-## Arquitectura y servicios
+```bash
+id -u
+systemctl --version
+```
 
-- App FastAPI: `pg_manager` (systemd)
-- Proxy SQL: `haproxy` en `5432`
-- Pooling: `pgbouncer` en `6432`
-- PostgreSQL interno: `5433`
-- Reverse proxy web: `nginx`
-- Firewall detectado automaticamente:
-  - `ufw` en Debian/Ubuntu
-  - `firewalld` en RHEL/Rocky/Alma
+If the installer stops at `[1/11]`, re-run in debug mode and inspect the log:
 
-## Variables de entorno backend
+```bash
+THL_INSTALL_DEBUG=1 \
+THL_INSTALL_LOG_FILE=/var/log/thl-sql-install.log \
+curl -fsSL https://raw.githubusercontent.com/thl-corporation/thl-sql/main/install.sh | bash
+```
 
-Usa `backend/.env.example` como base. Variables clave:
+Quick diagnostics:
 
-- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`
-- `PUBLIC_DB_HOST`, `PUBLIC_DB_PORT`
-- `POOLING_ENABLED`, `PGBOUNCER_*`, `HAPROXY_*`
-- `ADMIN_USERNAME`, `ADMIN_PASSWORD`
-- `ENCRYPTION_KEY`
+```bash
+tail -n 120 /var/log/thl-sql-install.log
+journalctl -u pg_manager -n 80 --no-pager
+```
 
-## Suite de validacion
+Domain note:
 
-En el VPS:
+- If `THL_DOMAIN` is set, installer uses HTTPS flow with certbot.
+- If `THL_DOMAIN` is empty, installer uses IP mode (`http://IP:PORT`).
+- If an existing install is detected, credentials and current `.env` settings are preserved by default.
+
+## Technical Validation
+
+On the VPS:
 
 ```bash
 cd /var/www/pg_manager
@@ -67,23 +142,27 @@ python server/run_sql_load_test.py --connections 1000 --hold-seconds 20 --sample
 bash server/run_test_suite.sh
 ```
 
-Desde una maquina externa:
+From an external client:
 
 ```bash
 python verify_remote.py
 ```
 
-## Documentacion adicional
+## Publication Safety
 
-- `INSTRUCCIONES_UPDATE_VPS.md`
-- `INSTRUCCIONES_TEST_REMOTO.md`
-- `docs/PRUEBA_1000_CONEXIONES.md`
+- No real secrets are stored in git.
+- Sensitive values are handled through `*.example` templates.
+- Keys and credentials are blocked in `.gitignore`.
+- Run this safety check before publishing:
+
+```bash
+bash server/check_repo_safety.sh
+```
+
+## Documentation
+
 - `docs/INSTALL_LINUX_MULTI_DISTRO.md`
 - `docs/REPLICAR_EN_OTRO_VPS.md`
-
-## Seguridad
-
-- No commitear `.env`, llaves SSH ni backups de credenciales.
-- Revisar `.gitignore` antes de cada push.
-- Reemplazar placeholders de `*.example` antes de desplegar a produccion.
-- Validar repo antes de publicar: `bash server/check_repo_safety.sh`
+- `docs/PRUEBA_1000_CONEXIONES.md`
+- `INSTRUCCIONES_UPDATE_VPS.md`
+- `INSTRUCCIONES_TEST_REMOTO.md`

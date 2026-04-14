@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Shell syntax checks
+        run: |
+          bash -n install.sh
+          bash -n deploy_remote.sh
+          bash -n setup_dns.sh
+          bash -n setup_postgres.sh
+          bash -n server/check_repo_safety.sh
+          bash -n server/configure_postgres_timeouts.sh
+          bash -n server/configure_sql_proxy.sh
+          bash -n server/run_test_suite.sh
+
+      - name: Shell quality checks
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck -S error install.sh
+            shellcheck -S error deploy_remote.sh
+            shellcheck -S error setup_dns.sh
+            shellcheck -S error setup_postgres.sh
+            shellcheck -S error server/check_repo_safety.sh
+            shellcheck -S error server/configure_postgres_timeouts.sh
+            shellcheck -S error server/configure_sql_proxy.sh
+            shellcheck -S error server/run_test_suite.sh
+          else
+            echo "shellcheck no disponible en el runner; se omite lint de shell."
+          fi
+
+      - name: Repository safety check
+        run: bash server/check_repo_safety.sh
+
+      - name: Python compile check
+        run: |
+          python -m compileall backend
+          python -m compileall server
+          python -m compileall verify_deployment.py
+          python -m compileall verify_remote.py

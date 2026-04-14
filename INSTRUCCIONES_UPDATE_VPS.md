@@ -14,12 +14,6 @@ git pull origin main
 bash deploy_remote.sh
 ```
 
-Opcionalmente desde tu equipo local:
-
-```bash
-ssh root@TU_SERVIDOR "cd /var/www/pg_manager && git pull origin main && bash deploy_remote.sh"
-```
-
 ## Que hace `deploy_remote.sh`
 
 1. Actualiza dependencias Python.
