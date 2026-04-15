@@ -60,6 +60,10 @@ Supported families:
 - `PUBLIC_PORT` (override public panel port in summaries, useful in Docker)
 - `PUBLIC_SCHEME=http|https` (override public panel scheme in summaries)
 - `PANEL_URL` (override the full public panel URL shown by the installer)
+- `PUBLIC_DB_HOST` (override the SQL host shown by the app and used in generated credentials)
+- `PUBLIC_DB_PORT` (override the SQL port shown by the app and used in generated credentials)
+- `ALLOWED_PORTS=*|80,443,8080` (panel firewall policy for user-managed ports; default: `*`)
+- `PROTECTED_PORTS=22,80,443,5432` (ports the panel will not close/open directly)
 
 ## Installation Modes (3 options)
 
@@ -152,6 +156,8 @@ docker run -d \
   -p 5432:5432 \
   -e PUBLIC_HOST=localhost \
   -e PUBLIC_PORT=8080 \
+  -e PUBLIC_DB_HOST=localhost \
+  -e PUBLIC_DB_PORT=5432 \
   --name thl_sql_01 \
   thl-sql:local
 ```
@@ -172,13 +178,28 @@ docker compose exec thl-sql bash -lc 'THL_ACTION=reinstall THL_FORCE=1 bash /opt
 Notes:
 
 - `Dockerfile` sets `PUBLIC_HOST=localhost`, `PUBLIC_PORT=80`, and `PUBLIC_SCHEME=http` as safe defaults.
+- `Dockerfile` also sets `PUBLIC_DB_HOST=localhost` and `PUBLIC_DB_PORT=5432` so generated SQL credentials match the container access point by default.
 - The summary URL is controlled by `PANEL_URL` when you want to override the entire value directly.
 - If the mapped host port is not `80`, set `PUBLIC_PORT` explicitly so the summary shows a reachable URL.
+- If the mapped SQL port is not `5432`, set `PUBLIC_DB_PORT` explicitly so generated credentials show the real published SQL endpoint.
+- Inside Docker, the panel cannot publish new container ports by itself; published ports still come from `docker run -p` or Compose.
+- Inside Docker, SQL allowlists are enforced by `HAProxy` when there is no host firewall backend available.
+
+## Firewall Behavior
+
+- On host installs, the installer configures the native firewall safely and keeps existing rules intact.
+- Debian/Ubuntu hosts use `ufw --force enable` so installation stays non-interactive.
+- RHEL-family hosts use the current firewalld default zone instead of assuming `public`.
+- The panel now treats the legacy `ALLOWED_PORTS=22,80,443,5432` default as unrestricted legacy behavior, so older installs can open additional host ports without manual `.env` edits.
+- Protected ports such as `22`, the active web port, and the SQL public port remain blocked from direct close/open operations in the UI.
+- In containers, general port publishing is unmanaged by the panel and should be done with Docker mappings, but SQL IP restrictions still work through HAProxy ACLs.
 
 ## Dashboard Runtime Metrics
 
 - On host installations, `/api/stats` uses `psutil` to report CPU and memory.
 - On container installations, `/api/stats` reads CPU and memory usage from Linux cgroups when available so limited containers reflect container quotas instead of host totals.
+- The dashboard cards show both current usage and assigned capacity for CPU and RAM.
+- When a container has no explicit cgroup limit, the UI marks CPU/RAM as `Sin limite cgroup` while still showing real container usage collected from cgroups.
 - The dashboard metrics refresh interval is `10000` ms (10 seconds).
 
 ## Repository Sync

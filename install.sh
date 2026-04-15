@@ -28,6 +28,9 @@ PUBLIC_HOST="${PUBLIC_HOST:-}"
 PUBLIC_PORT="${PUBLIC_PORT:-}"
 PUBLIC_SCHEME="${PUBLIC_SCHEME:-}"
 PANEL_URL="${PANEL_URL:-}"
+PUBLIC_DB_HOST="${PUBLIC_DB_HOST:-}"
+PUBLIC_DB_PORT="${PUBLIC_DB_PORT:-}"
+PUBLIC_DB_HOST_SOURCE="${PUBLIC_DB_HOST_SOURCE:-}"
 FIREWALL_BACKEND=""
 OS_FAMILY=""
 PKG_TOOL=""
@@ -821,6 +824,34 @@ ensure_env_key() {
     fi
 }
 
+managed_allowed_ports_value() {
+    local current_value="$1"
+    case "${current_value}" in
+        ""|"22,80,443,5432")
+            echo "*"
+            ;;
+        *)
+            echo "${current_value}"
+            ;;
+    esac
+}
+
+managed_protected_ports_value() {
+    printf '22,80,443,%s,5432\n' "${WEB_PORT}"
+}
+
+detect_firewalld_zone() {
+    if [ -n "${THL_FIREWALLD_ZONE:-}" ]; then
+        echo "${THL_FIREWALLD_ZONE}"
+        return
+    fi
+    if ! command -v firewall-cmd >/dev/null 2>&1; then
+        echo "public"
+        return
+    fi
+    firewall-cmd --get-default-zone 2>/dev/null || echo "public"
+}
+
 extract_http_port_from_origins() {
     local origins="$1"
     printf '%s\n' "${origins}" | tr ',' '\n' | sed -n 's#^http://[^:]\+:\([0-9][0-9]*\).*$#\1#p' | head -1
@@ -1605,6 +1636,8 @@ ensure_repo_source() {
     export PUBLIC_PORT="${PUBLIC_PORT:-}"
     export PUBLIC_SCHEME="${PUBLIC_SCHEME:-}"
     export PANEL_URL="${PANEL_URL:-}"
+    export PUBLIC_DB_HOST="${PUBLIC_DB_HOST:-}"
+    export PUBLIC_DB_PORT="${PUBLIC_DB_PORT:-}"
 
     exec bash "${BOOTSTRAP_DIR}/install.sh"
 }
@@ -1615,9 +1648,12 @@ collect_input() {
     local existing_admin_password=""
     local existing_db_password=""
     local existing_public_db_host=""
+    local existing_public_db_port=""
     local existing_cookie_secure=""
     local existing_allowed_origins=""
     local existing_http_port=""
+    local requested_public_db_host="${PUBLIC_DB_HOST:-}"
+    local requested_public_db_port="${PUBLIC_DB_PORT:-}"
     SERVER_IP="$(curl -fsS --max-time 5 https://ifconfig.me || hostname -I | awk '{print $1}')"
     if [ -z "${SERVER_IP}" ]; then
         SERVER_IP="127.0.0.1"
@@ -1628,6 +1664,7 @@ collect_input() {
         existing_admin_password="$(existing_env_value ADMIN_PASSWORD)"
         existing_db_password="$(existing_env_value DB_PASSWORD)"
         existing_public_db_host="$(existing_env_value PUBLIC_DB_HOST)"
+        existing_public_db_port="$(existing_env_value PUBLIC_DB_PORT)"
         existing_cookie_secure="$(existing_env_value COOKIE_SECURE)"
         existing_allowed_origins="$(existing_env_value ALLOWED_ORIGINS)"
         existing_http_port="$(extract_http_port_from_origins "${existing_allowed_origins}")"
@@ -1703,7 +1740,10 @@ collect_input() {
         APP_URL="https://${DOMAIN}"
         ALLOWED_ORIGINS="https://${DOMAIN}"
         COOKIE_SECURE="true"
-        PUBLIC_DB_HOST="${DOMAIN}"
+        PUBLIC_DB_HOST="${requested_public_db_host:-${DOMAIN}}"
+        PUBLIC_DB_PORT="${requested_public_db_port:-${existing_public_db_port:-5432}}"
+        PUBLIC_DB_HOST_SOURCE="${requested_public_db_host:+override}"
+        PUBLIC_DB_HOST_SOURCE="${PUBLIC_DB_HOST_SOURCE:-domain}"
     else
         if [ "${UX_MODE_ACTIVE}" = "1" ]; then
             warn "THL_DOMAIN no definido en modo UX. Se usara modo IP:puerto (sin TLS automatico)."
@@ -1721,7 +1761,17 @@ collect_input() {
         APP_URL="http://${BIND_IP}:${WEB_PORT}"
         ALLOWED_ORIGINS="http://${BIND_IP}:${WEB_PORT},http://${BIND_IP}"
         COOKIE_SECURE="false"
-        PUBLIC_DB_HOST="${BIND_IP}"
+        if [ "${RUNTIME_ENV}" = "container" ]; then
+            PUBLIC_DB_HOST="${requested_public_db_host:-${PUBLIC_HOST:-localhost}}"
+            PUBLIC_DB_PORT="${requested_public_db_port:-${existing_public_db_port:-5432}}"
+            PUBLIC_DB_HOST_SOURCE="${requested_public_db_host:+override}"
+            PUBLIC_DB_HOST_SOURCE="${PUBLIC_DB_HOST_SOURCE:-container_auto}"
+        else
+            PUBLIC_DB_HOST="${requested_public_db_host:-${BIND_IP}}"
+            PUBLIC_DB_PORT="${requested_public_db_port:-${existing_public_db_port:-5432}}"
+            PUBLIC_DB_HOST_SOURCE="${requested_public_db_host:+override}"
+            PUBLIC_DB_HOST_SOURCE="${PUBLIC_DB_HOST_SOURCE:-host_auto}"
+        fi
     fi
 
     resolve_panel_url
@@ -1744,6 +1794,7 @@ show_summary() {
     echo "  Admin user:      ${ADMIN_USERNAME}"
     echo "  Panel URL:       ${PANEL_URL}"
     echo "  Public DB host:  ${PUBLIC_DB_HOST}"
+    echo "  Public DB port:  ${PUBLIC_DB_PORT}"
     echo "  PostgreSQL pass: ${PG_PASSWORD:0:5}..."
     print_container_panel_url_warning
     echo -e "${CYAN}========================================${NC}"
@@ -1768,6 +1819,8 @@ write_install_summary_file() {
         echo "Entorno: ${RUNTIME_ENV}"
         echo "Gestor de servicios: ${SERVICE_MANAGER}"
         echo "Panel URL: ${PANEL_URL}"
+        echo "Public DB host: ${PUBLIC_DB_HOST}"
+        echo "Public DB port: ${PUBLIC_DB_PORT}"
         echo "Admin user: ${ADMIN_USERNAME}"
         write_container_panel_url_warning
         if [ "${EXISTING_INSTALL}" = "1" ]; then
@@ -1925,10 +1978,18 @@ write_env_file() {
     log "[6/11] Generando backend/.env..."
     local encryption_key
     local env_file_path="${APP_DIR}/backend/.env"
+    local allowed_ports_value
+    local allowed_ports_source=""
+    local protected_ports_value
     encryption_key="$(existing_env_value ENCRYPTION_KEY)"
     if [ -z "${encryption_key}" ]; then
         encryption_key="$("${APP_DIR}/venv/bin/python3" -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")"
     fi
+    if [ "${EXISTING_INSTALL}" = "1" ] && [ "${THL_PRESERVE_EXISTING}" = "1" ]; then
+        allowed_ports_source="$(existing_env_value ALLOWED_PORTS)"
+    fi
+    allowed_ports_value="$(managed_allowed_ports_value "${allowed_ports_source}")"
+    protected_ports_value="$(managed_protected_ports_value)"
 
     if [ "${EXISTING_INSTALL}" = "1" ] && [ "${THL_PRESERVE_EXISTING}" = "1" ] && [ -n "${EXISTING_ENV_BACKUP}" ] && [ -f "${EXISTING_ENV_BACKUP}" ]; then
         cp "${EXISTING_ENV_BACKUP}" "${env_file_path}"
@@ -1945,14 +2006,17 @@ write_env_file() {
     set_env_key "${env_file_path}" "ADMIN_USERNAME" "${ADMIN_USERNAME}"
     set_env_key "${env_file_path}" "ADMIN_PASSWORD" "${ADMIN_PASSWORD}"
     set_env_key "${env_file_path}" "PUBLIC_DB_HOST" "${PUBLIC_DB_HOST}"
+    set_env_key "${env_file_path}" "PUBLIC_DB_PORT" "${PUBLIC_DB_PORT}"
+    set_env_key "${env_file_path}" "PUBLIC_DB_HOST_SOURCE" "${PUBLIC_DB_HOST_SOURCE:-configured}"
     set_env_key "${env_file_path}" "ALLOWED_ORIGINS" "${ALLOWED_ORIGINS}"
     set_env_key "${env_file_path}" "COOKIE_SECURE" "${COOKIE_SECURE}"
     set_env_key "${env_file_path}" "RUNTIME_ENV" "${RUNTIME_ENV}"
     set_env_key "${env_file_path}" "SERVICE_MANAGER" "${SERVICE_MANAGER}"
+    set_env_key "${env_file_path}" "APP_WEB_PORT" "${WEB_PORT}"
+    set_env_key "${env_file_path}" "PROTECTED_PORTS" "${protected_ports_value}"
 
     if [ "${EXISTING_INSTALL}" = "1" ] && [ "${THL_PRESERVE_EXISTING}" = "1" ]; then
         ensure_env_key "${env_file_path}" "COOKIE_NAME" "access_token"
-        ensure_env_key "${env_file_path}" "PUBLIC_DB_PORT" "5432"
         ensure_env_key "${env_file_path}" "POOLING_ENABLED" "true"
         ensure_env_key "${env_file_path}" "PGBOUNCER_HOST" "127.0.0.1"
         ensure_env_key "${env_file_path}" "PGBOUNCER_PORT" "${PGBOUNCER_INTERNAL_PORT}"
@@ -1977,12 +2041,11 @@ write_env_file() {
         ensure_env_key "${env_file_path}" "LOGIN_RATE_WINDOW_SEC" "300"
         ensure_env_key "${env_file_path}" "SESSION_TTL_SEC" "86400"
         ensure_env_key "${env_file_path}" "TRUSTED_PROXY" "true"
-        ensure_env_key "${env_file_path}" "ALLOWED_PORTS" "22,80,443,5432"
+        set_env_key "${env_file_path}" "ALLOWED_PORTS" "${allowed_ports_value}"
         set_env_key "${env_file_path}" "FIREWALL_BACKEND" "${FIREWALL_BACKEND}"
         ensure_env_key "${env_file_path}" "ENCRYPTION_KEY" "${encryption_key}"
     else
         set_env_key "${env_file_path}" "COOKIE_NAME" "access_token"
-        set_env_key "${env_file_path}" "PUBLIC_DB_PORT" "5432"
         set_env_key "${env_file_path}" "POOLING_ENABLED" "true"
         set_env_key "${env_file_path}" "PGBOUNCER_HOST" "127.0.0.1"
         set_env_key "${env_file_path}" "PGBOUNCER_PORT" "${PGBOUNCER_INTERNAL_PORT}"
@@ -2007,7 +2070,7 @@ write_env_file() {
         set_env_key "${env_file_path}" "LOGIN_RATE_WINDOW_SEC" "300"
         set_env_key "${env_file_path}" "SESSION_TTL_SEC" "86400"
         set_env_key "${env_file_path}" "TRUSTED_PROXY" "true"
-        set_env_key "${env_file_path}" "ALLOWED_PORTS" "22,80,443,5432"
+        set_env_key "${env_file_path}" "ALLOWED_PORTS" "${allowed_ports_value}"
         set_env_key "${env_file_path}" "FIREWALL_BACKEND" "${FIREWALL_BACKEND}"
         set_env_key "${env_file_path}" "ENCRYPTION_KEY" "${encryption_key}"
     fi
@@ -2295,6 +2358,7 @@ NGEOF
 
 configure_firewall() {
     log "[10/11] Configurando firewall (${FIREWALL_BACKEND})..."
+    local firewalld_zone=""
     if [ "${FIREWALL_BACKEND}" = "none" ]; then
         log "Firewall omitido para este entorno (${RUNTIME_ENV})."
         return
@@ -2307,18 +2371,21 @@ configure_firewall() {
         else
             ufw allow "${WEB_PORT}/tcp" >/dev/null 2>&1 || true
         fi
-        printf "y\n" | ufw enable >/dev/null 2>&1 || true
+        if ! ufw status 2>/dev/null | grep -q "^Status: active"; then
+            ufw --force enable >/dev/null 2>&1 || true
+        fi
         return
     fi
 
     enable_service_if_exists firewalld
     start_service firewalld
-    firewall-cmd --permanent --add-service=ssh >/dev/null 2>&1 || true
+    firewalld_zone="$(detect_firewalld_zone)"
+    firewall-cmd --permanent --zone="${firewalld_zone}" --add-service=ssh >/dev/null 2>&1 || true
     if [ "${USE_DOMAIN}" = "true" ]; then
-        firewall-cmd --permanent --add-port=80/tcp >/dev/null 2>&1 || true
-        firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --zone="${firewalld_zone}" --add-port=80/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --zone="${firewalld_zone}" --add-port=443/tcp >/dev/null 2>&1 || true
     else
-        firewall-cmd --permanent --add-port="${WEB_PORT}/tcp" >/dev/null 2>&1 || true
+        firewall-cmd --permanent --zone="${firewalld_zone}" --add-port="${WEB_PORT}/tcp" >/dev/null 2>&1 || true
     fi
     firewall-cmd --reload >/dev/null 2>&1 || true
 }

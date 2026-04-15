@@ -7,6 +7,8 @@ services:
     environment:
       PUBLIC_HOST: localhost
       PUBLIC_PORT: "8080"
+      PUBLIC_DB_HOST: localhost
+      PUBLIC_DB_PORT: "5432"
       PUBLIC_SCHEME: http
       THL_NO_SYSTEMD: "1"
     ports:

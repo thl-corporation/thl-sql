@@ -18,6 +18,8 @@ defaults
 
 frontend sql_proxy_frontend
     bind *:__PUBLIC_PORT__ backlog __LISTEN_BACKLOG__
+    # BEGIN THL SQL ACLS
+    # END THL SQL ACLS
     default_backend pgbouncer_backend
 
 backend pgbouncer_backend

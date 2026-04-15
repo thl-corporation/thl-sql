@@ -54,10 +54,12 @@ DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", None)
 PUBLIC_DB_HOST = os.getenv("PUBLIC_DB_HOST", DB_HOST)
 PUBLIC_DB_PORT = int(os.getenv("PUBLIC_DB_PORT", "5432"))
+PUBLIC_DB_HOST_SOURCE = os.getenv("PUBLIC_DB_HOST_SOURCE", "")
 POOLING_ENABLED = os.getenv("POOLING_ENABLED", "false").lower() in ("1", "true", "yes")
 PGBOUNCER_HOST = os.getenv("PGBOUNCER_HOST", "127.0.0.1")
 PGBOUNCER_PORT = int(os.getenv("PGBOUNCER_PORT", "6432"))
 POOL_MODE = os.getenv("POOL_MODE", "transaction")
+APP_WEB_PORT = int(os.getenv("APP_WEB_PORT", "80"))
 
 
 def detect_pg_hba_path():
@@ -141,7 +143,9 @@ LOGIN_RATE_LIMIT = int(os.getenv("LOGIN_RATE_LIMIT", "8"))
 LOGIN_RATE_WINDOW_SEC = int(os.getenv("LOGIN_RATE_WINDOW_SEC", "300"))
 SESSION_TTL_SEC = int(os.getenv("SESSION_TTL_SEC", "86400"))
 TRUSTED_PROXY = os.getenv("TRUSTED_PROXY", "false").lower() in ("1", "true", "yes")
-ALLOWED_PORTS_ENV = os.getenv("ALLOWED_PORTS", "22,80,443,5432")
+ALLOWED_PORTS_ENV = os.getenv("ALLOWED_PORTS", "*")
+PROTECTED_PORTS_ENV = os.getenv("PROTECTED_PORTS", f"22,80,443,{APP_WEB_PORT},{PUBLIC_DB_PORT}")
+LEGACY_ALLOWED_PORTS_ENV = "22,80,443,5432"
 login_attempts = {}
 session_store = {}
 
@@ -248,6 +252,14 @@ def read_first_int(paths: list[str]):
     return None
 
 
+def read_first_text(paths: list[str]):
+    for path in paths:
+        raw_value = read_text_if_exists(path)
+        if raw_value not in (None, ""):
+            return raw_value
+    return None
+
+
 def parse_cpu_set_count(raw_value: str | None):
     if not raw_value:
         return None
@@ -275,6 +287,70 @@ def parse_cpu_set_count(raw_value: str | None):
     return count or None
 
 
+def get_proc_self_cgroup_paths():
+    mapping = {}
+    try:
+        with open("/proc/self/cgroup", "r", encoding="utf-8") as handle:
+            for line in handle:
+                parts = line.strip().split(":", 2)
+                if len(parts) != 3:
+                    continue
+                _, controllers, path = parts
+                if not controllers:
+                    mapping["unified"] = path
+                    continue
+                for controller in controllers.split(","):
+                    mapping[controller] = path
+    except OSError:
+        return {}
+    return mapping
+
+
+def cgroup_join(base_path: str, cgroup_path: str | None, file_name: str):
+    candidates = []
+    if cgroup_path:
+        relative = cgroup_path.lstrip("/")
+        if relative:
+            candidates.append(os.path.join(base_path, relative, file_name))
+    candidates.append(os.path.join(base_path, file_name))
+    deduped = []
+    for candidate in candidates:
+        if candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
+
+def cgroup_v2_candidates(file_name: str):
+    proc_paths = get_proc_self_cgroup_paths()
+    return cgroup_join("/sys/fs/cgroup", proc_paths.get("unified"), file_name)
+
+
+def cgroup_v1_candidates(controller: str, file_name: str):
+    proc_paths = get_proc_self_cgroup_paths()
+    controller_paths = {
+        "cpu": [
+            ("/sys/fs/cgroup/cpu", proc_paths.get("cpu")),
+            ("/sys/fs/cgroup/cpu,cpuacct", proc_paths.get("cpu") or proc_paths.get("cpuacct")),
+        ],
+        "cpuacct": [
+            ("/sys/fs/cgroup/cpuacct", proc_paths.get("cpuacct")),
+            ("/sys/fs/cgroup/cpu,cpuacct", proc_paths.get("cpuacct") or proc_paths.get("cpu")),
+        ],
+        "memory": [
+            ("/sys/fs/cgroup/memory", proc_paths.get("memory")),
+        ],
+        "cpuset": [
+            ("/sys/fs/cgroup/cpuset", proc_paths.get("cpuset")),
+        ],
+    }
+    candidates = []
+    for base_path, cgroup_path in controller_paths.get(controller, []):
+        for candidate in cgroup_join(base_path, cgroup_path, file_name):
+            if candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
 def detect_cgroup_version():
     if os.path.exists("/sys/fs/cgroup/cgroup.controllers"):
         return 2
@@ -287,12 +363,21 @@ def detect_cgroup_version():
     return None
 
 
-def get_container_cpu_limit_cores():
+def normalize_cpu_core_value(value: float | int | None):
+    if value is None:
+        return None
+    normalized = round(float(value), 2)
+    if normalized.is_integer():
+        return int(normalized)
+    return normalized
+
+
+def get_container_cpu_limit_details():
     cgroup_version = detect_cgroup_version()
     quota_cores = None
 
     if cgroup_version == 2:
-        cpu_max = read_text_if_exists("/sys/fs/cgroup/cpu.max")
+        cpu_max = read_first_text(cgroup_v2_candidates("cpu.max"))
         if cpu_max:
             parts = cpu_max.split()
             if len(parts) == 2 and parts[0] != "max":
@@ -304,41 +389,47 @@ def get_container_cpu_limit_cores():
                 except ValueError:
                     quota_cores = None
     elif cgroup_version == 1:
-        quota = read_first_int(
-            [
-                "/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
-                "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us",
-            ]
-        )
-        period = read_first_int(
-            [
-                "/sys/fs/cgroup/cpu/cpu.cfs_period_us",
-                "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us",
-            ]
-        )
+        quota = read_first_int(cgroup_v1_candidates("cpu", "cpu.cfs_quota_us"))
+        period = read_first_int(cgroup_v1_candidates("cpu", "cpu.cfs_period_us"))
         if quota is not None and period and quota > 0 and period > 0:
             quota_cores = quota / period
 
     cpuset_count = parse_cpu_set_count(
-        read_text_if_exists("/sys/fs/cgroup/cpuset.cpus.effective")
-        or read_text_if_exists("/sys/fs/cgroup/cpuset/cpuset.cpus")
+        read_first_text(cgroup_v2_candidates("cpuset.cpus.effective"))
+        or read_first_text(cgroup_v1_candidates("cpuset", "cpuset.cpus.effective"))
+        or read_first_text(cgroup_v1_candidates("cpuset", "cpuset.cpus"))
         or read_text_if_exists("/sys/fs/cgroup/cpuset.cpus")
     )
 
+    host_cores = psutil.cpu_count() or 1
+    assigned_cores = None
+    limit_source = "host"
+
     if quota_cores and cpuset_count:
-        return max(min(quota_cores, cpuset_count), 0.001)
-    if quota_cores:
-        return max(quota_cores, 0.001)
-    if cpuset_count:
-        return cpuset_count
-    return psutil.cpu_count() or 1
+        assigned_cores = max(min(quota_cores, cpuset_count), 0.001)
+        limit_source = "quota+cpuset"
+    elif quota_cores:
+        assigned_cores = max(quota_cores, 0.001)
+        limit_source = "quota"
+    elif cpuset_count:
+        assigned_cores = cpuset_count
+        limit_source = "cpuset"
+    else:
+        assigned_cores = host_cores
+
+    return {
+        "assigned_cores": normalize_cpu_core_value(assigned_cores),
+        "host_cores": host_cores,
+        "limit_source": limit_source,
+        "limited": limit_source != "host",
+    }
 
 
 def read_container_cpu_usage_seconds():
     cgroup_version = detect_cgroup_version()
 
     if cgroup_version == 2:
-        cpu_stat = read_text_if_exists("/sys/fs/cgroup/cpu.stat")
+        cpu_stat = read_first_text(cgroup_v2_candidates("cpu.stat"))
         if not cpu_stat:
             return None
         for line in cpu_stat.splitlines():
@@ -352,12 +443,7 @@ def read_container_cpu_usage_seconds():
         return None
 
     if cgroup_version == 1:
-        usage_ns = read_first_int(
-            [
-                "/sys/fs/cgroup/cpuacct/cpuacct.usage",
-                "/sys/fs/cgroup/cpu,cpuacct/cpuacct.usage",
-            ]
-        )
+        usage_ns = read_first_int(cgroup_v1_candidates("cpuacct", "cpuacct.usage"))
         if usage_ns is None:
             return None
         return usage_ns / 1_000_000_000
@@ -365,7 +451,7 @@ def read_container_cpu_usage_seconds():
     return None
 
 
-def get_container_cpu_percent():
+def get_container_cpu_stats():
     global CGROUP_CPU_SAMPLE
 
     usage_seconds = read_container_cpu_usage_seconds()
@@ -377,16 +463,31 @@ def get_container_cpu_percent():
     previous_timestamp = CGROUP_CPU_SAMPLE["timestamp"]
     CGROUP_CPU_SAMPLE = {"usage_seconds": usage_seconds, "timestamp": now}
 
+    cpu_limit = get_container_cpu_limit_details()
+    assigned_cores = float(cpu_limit["assigned_cores"] or 1)
+
     if previous_usage is None or previous_timestamp is None or now <= previous_timestamp:
-        return 0.0
+        return {
+            "percent": 0.0,
+            "usage_seconds": round(usage_seconds, 4),
+            "scope": "container",
+            "source": "cgroup",
+            **cpu_limit,
+        }
 
     elapsed = now - previous_timestamp
-    cpu_limit_cores = get_container_cpu_limit_cores()
-    if elapsed <= 0 or cpu_limit_cores <= 0:
-        return 0.0
+    if elapsed <= 0 or assigned_cores <= 0:
+        cpu_percent = 0.0
+    else:
+        cpu_percent = ((usage_seconds - previous_usage) / (elapsed * assigned_cores)) * 100
 
-    cpu_percent = ((usage_seconds - previous_usage) / (elapsed * cpu_limit_cores)) * 100
-    return round(max(0.0, min(cpu_percent, 100.0)), 2)
+    return {
+        "percent": round(max(0.0, min(cpu_percent, 100.0)), 2),
+        "usage_seconds": round(usage_seconds, 4),
+        "scope": "container",
+        "source": "cgroup",
+        **cpu_limit,
+    }
 
 
 def get_container_memory_stats():
@@ -394,21 +495,13 @@ def get_container_memory_stats():
     host_total = psutil.virtual_memory().total
 
     if cgroup_version == 2:
-        used = read_first_int(["/sys/fs/cgroup/memory.current"])
-        total = read_first_int(["/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.high"])
+        used = read_first_int(cgroup_v2_candidates("memory.current"))
+        total = read_first_int(cgroup_v2_candidates("memory.max"))
+        high = read_first_int(cgroup_v2_candidates("memory.high"))
     elif cgroup_version == 1:
-        used = read_first_int(
-            [
-                "/sys/fs/cgroup/memory/memory.usage_in_bytes",
-                "/sys/fs/cgroup/memory/memory.memsw.usage_in_bytes",
-            ]
-        )
-        total = read_first_int(
-            [
-                "/sys/fs/cgroup/memory/memory.limit_in_bytes",
-                "/sys/fs/cgroup/memory/memory.soft_limit_in_bytes",
-            ]
-        )
+        used = read_first_int(cgroup_v1_candidates("memory", "memory.usage_in_bytes")) or read_first_int(cgroup_v1_candidates("memory", "memory.memsw.usage_in_bytes"))
+        total = read_first_int(cgroup_v1_candidates("memory", "memory.limit_in_bytes"))
+        high = read_first_int(cgroup_v1_candidates("memory", "memory.soft_limit_in_bytes"))
     else:
         return None
 
@@ -419,14 +512,59 @@ def get_container_memory_stats():
     if total is not None and host_total and total > host_total * 16:
         total = None
 
-    if total is None or total <= 0:
-        return None
+    if high is not None and high <= 0:
+        high = None
+    if high is not None and host_total and high > host_total * 16:
+        high = None
 
-    memory_percent = round((used / total) * 100, 2)
+    limit_bytes = total if total and total > 0 else None
+    limit_source = "cgroup_limit"
+    if limit_bytes is None and high is not None:
+        limit_bytes = high
+        limit_source = "cgroup_high"
+    if limit_bytes is None:
+        limit_bytes = host_total
+        limit_source = "host_total"
+
+    memory_percent = round((used / limit_bytes) * 100, 2) if limit_bytes else 0.0
     return {
-        "total": total,
+        "total": limit_bytes,
         "percent": max(0.0, min(memory_percent, 100.0)),
         "used": used,
+        "assigned_bytes": limit_bytes,
+        "host_total": host_total,
+        "limit_source": limit_source,
+        "limited": limit_source != "host_total",
+        "scope": "container",
+        "source": "cgroup",
+    }
+
+
+def get_host_cpu_stats():
+    host_cores = psutil.cpu_count() or 1
+    return {
+        "percent": psutil.cpu_percent(interval=None),
+        "assigned_cores": host_cores,
+        "host_cores": host_cores,
+        "limit_source": "host",
+        "limited": False,
+        "scope": "host",
+        "source": "psutil",
+    }
+
+
+def get_host_memory_stats():
+    host_memory = psutil.virtual_memory()
+    return {
+        "total": host_memory.total,
+        "percent": host_memory.percent,
+        "used": host_memory.used,
+        "assigned_bytes": host_memory.total,
+        "host_total": host_memory.total,
+        "limit_source": "host",
+        "limited": False,
+        "scope": "host",
+        "source": "psutil",
     }
 
 
@@ -435,22 +573,36 @@ def get_runtime_stats():
     memory_stats = None
 
     if RUNTIME_ENV == "container":
-        cpu_stats = get_container_cpu_percent()
+        cpu_stats = get_container_cpu_stats()
         memory_stats = get_container_memory_stats()
 
     if cpu_stats is None:
-        cpu_stats = psutil.cpu_percent(interval=None)
+        cpu_stats = get_host_cpu_stats()
     if memory_stats is None:
-        host_memory = psutil.virtual_memory()
-        memory_stats = {
-            "total": host_memory.total,
-            "percent": host_memory.percent,
-            "used": host_memory.used,
-        }
+        memory_stats = get_host_memory_stats()
 
     return {
         "cpu": cpu_stats,
         "memory": memory_stats,
+        "runtime_env": RUNTIME_ENV,
+    }
+
+
+def normalize_public_db_host(host_value: str):
+    cleaned = (host_value or "").strip()
+    if cleaned in ("", "0.0.0.0", "::", "[::]"):
+        return "localhost" if RUNTIME_ENV == "container" else "127.0.0.1"
+    if cleaned in ("127.0.0.1", "::1"):
+        return "localhost"
+    return cleaned
+
+
+def get_public_db_endpoint():
+    return {
+        "host": normalize_public_db_host(PUBLIC_DB_HOST),
+        "port": PUBLIC_DB_PORT,
+        "runtime_env": RUNTIME_ENV,
+        "host_source": PUBLIC_DB_HOST_SOURCE or ("configured" if PUBLIC_DB_HOST else "derived"),
     }
 
 
@@ -606,10 +758,33 @@ def parse_allowed_ports(value: str):
                 ports.add(p)
     return ports
 
-ALLOWED_PORTS = parse_allowed_ports(ALLOWED_PORTS_ENV)
+def resolve_allowed_ports(value: str):
+    if value.strip() == LEGACY_ALLOWED_PORTS_ENV:
+        return None
+    return parse_allowed_ports(value)
+
+
+ALLOWED_PORTS = resolve_allowed_ports(ALLOWED_PORTS_ENV)
+PROTECTED_PORTS = parse_allowed_ports(PROTECTED_PORTS_ENV) or set()
 
 def is_port_allowed(port: int):
     return ALLOWED_PORTS is None or port in ALLOWED_PORTS
+
+
+def is_port_protected(port: int):
+    return port in PROTECTED_PORTS
+
+
+def protected_port_detail(port: int):
+    if port == PUBLIC_DB_PORT:
+        return f"Puerto SQL {PUBLIC_DB_PORT} se gestiona por IP"
+    if port == 22:
+        return "Puerto SSH 22 protegido"
+    if port in (80, 443, APP_WEB_PORT):
+        return f"Puerto web {port} protegido"
+    if is_port_protected(port):
+        return f"Puerto {port} protegido por la plataforma"
+    return None
 
 def get_session(request: Request):
     token = request.cookies.get(COOKIE_NAME)
@@ -750,7 +925,7 @@ def normalize_sql_ip(value: str):
         raise HTTPException(status_code=400, detail="Usa 0.0.0.0/0 para acceso público")
     return str(net)
 
-def parse_sql_access_rules(output: str):
+def parse_sql_access_rules(output: str, sql_port: int):
     allowed = []
     public_access = False
     for line in output.splitlines():
@@ -759,13 +934,13 @@ def parse_sql_access_rules(output: str):
         parts = line.split()
         if "ALLOW" not in parts:
             continue
-        if not any(p.startswith("5432/") for p in parts):
-            continue
         allow_index = parts.index("ALLOW")
         source_start = allow_index + 1
         if source_start < len(parts) and parts[source_start] == "IN":
             source_start += 1
         if source_start >= len(parts):
+            continue
+        if not any(p.startswith(f"{sql_port}/") for p in parts):
             continue
         source = " ".join(parts[source_start:])
         if source.startswith("Anywhere"):
@@ -776,10 +951,10 @@ def parse_sql_access_rules(output: str):
     return allowed, public_access
 
 
-def parse_firewalld_sql_access(output: str):
+def parse_firewalld_sql_access(output: str, sql_port: int):
     allowed = []
     for line in output.splitlines():
-        if "port port=\"5432\"" not in line:
+        if f'port port="{sql_port}"' not in line:
             continue
         match = re.search(r"source address=\"([^\"]+)\"", line)
         if match:
@@ -803,6 +978,24 @@ def detect_firewall_backend():
 FIREWALL_BACKEND = detect_firewall_backend()
 
 
+def detect_firewalld_zone():
+    configured = os.getenv("FIREWALLD_ZONE", "").strip()
+    if configured:
+        return configured
+    if FIREWALL_BACKEND != "firewalld":
+        return "public"
+    try:
+        result = run_sudo_command(["firewall-cmd", "--get-default-zone"])
+    except Exception:
+        return "public"
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return "public"
+
+
+FIREWALLD_ZONE = detect_firewalld_zone()
+
+
 def run_firewall_command(cmd_args):
     if FIREWALL_BACKEND == "ufw":
         return run_sudo_command(["ufw"] + cmd_args)
@@ -815,7 +1008,7 @@ def get_firewall_status_payload():
     if FIREWALL_BACKEND == "ufw":
         status_result = run_firewall_command(["status"])
         if status_result.returncode != 0:
-            return {"backend": "ufw", "status": "error", "detail": status_result.stderr, "ports": [], "public_sql": False}
+            return {"backend": "ufw", "status": "error", "detail": status_result.stderr, "ports": [], "public_sql": False, "manageable": True}
         output = status_result.stdout
         lines = output.splitlines()
         ports = []
@@ -830,11 +1023,11 @@ def get_firewall_status_payload():
                 p, proto = port_proto.split("/", 1)
             else:
                 p, proto = port_proto, "any"
-            if str(p) == "5432":
+            if str(p) == str(PUBLIC_DB_PORT):
                 continue
             if not any(item["port"] == p and item["protocol"] == proto for item in ports):
                 ports.append({"port": p, "protocol": proto})
-        _, public_sql = parse_sql_access_rules(output)
+        _, public_sql = parse_sql_access_rules(output, PUBLIC_DB_PORT)
         is_active = any("Status: active" in line for line in lines)
         return {
             "backend": "ufw",
@@ -842,6 +1035,7 @@ def get_firewall_status_payload():
             "detail": None,
             "ports": ports,
             "public_sql": public_sql,
+            "manageable": True,
         }
 
     if FIREWALL_BACKEND == "firewalld":
@@ -853,19 +1047,20 @@ def get_firewall_status_payload():
                 "detail": state_result.stderr,
                 "ports": [],
                 "public_sql": False,
+                "manageable": True,
             }
-        ports_result = run_firewall_command(["--zone=public", "--list-ports"])
-        rich_result = run_firewall_command(["--zone=public", "--list-rich-rules"])
+        ports_result = run_firewall_command([f"--zone={FIREWALLD_ZONE}", "--list-ports"])
+        rich_result = run_firewall_command([f"--zone={FIREWALLD_ZONE}", "--list-rich-rules"])
         listed_ports = ports_result.stdout.strip().split()
         ports = []
         for token in listed_ports:
             if "/" not in token:
                 continue
             p, proto = token.split("/", 1)
-            if str(p) == "5432":
+            if str(p) == str(PUBLIC_DB_PORT):
                 continue
             ports.append({"port": p, "protocol": proto})
-        public_sql = "5432/tcp" in listed_ports
+        public_sql = f"{PUBLIC_DB_PORT}/tcp" in listed_ports
         return {
             "backend": "firewalld",
             "status": "active",
@@ -873,31 +1068,45 @@ def get_firewall_status_payload():
             "ports": ports,
             "public_sql": public_sql,
             "rich_rules": rich_result.stdout if rich_result.returncode == 0 else "",
+            "zone": FIREWALLD_ZONE,
+            "manageable": True,
         }
 
-    return {"backend": "none", "status": "error", "detail": "No firewall backend configured", "ports": [], "public_sql": False}
+    detail = (
+        "Docker/Podman publica puertos fuera del contenedor; usa docker run -p o docker compose."
+        if RUNTIME_ENV == "container"
+        else "No hay un firewall compatible configurado en el host."
+    )
+    return {
+        "backend": "none",
+        "status": "unmanaged",
+        "detail": detail,
+        "ports": [],
+        "public_sql": False,
+        "manageable": False,
+    }
 
 
 def allow_port_rule(port: int, protocol: str):
     if FIREWALL_BACKEND == "ufw":
         return run_firewall_command(["allow", f"{port}/{protocol}"])
     if FIREWALL_BACKEND == "firewalld":
-        add_result = run_firewall_command(["--zone=public", "--add-port", f"{port}/{protocol}", "--permanent"])
+        add_result = run_firewall_command([f"--zone={FIREWALLD_ZONE}", "--add-port", f"{port}/{protocol}", "--permanent"])
         if add_result.returncode != 0:
             return add_result
         return run_firewall_command(["--reload"])
-    return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+    return subprocess.CompletedProcess([], 1, "", "La publicacion de puertos depende del entorno y no puede gestionarse desde la aplicacion")
 
 
 def revoke_port_rule(port: int, protocol: str):
     if FIREWALL_BACKEND == "ufw":
         return run_firewall_command(["delete", "allow", f"{port}/{protocol}"])
     if FIREWALL_BACKEND == "firewalld":
-        del_result = run_firewall_command(["--zone=public", "--remove-port", f"{port}/{protocol}", "--permanent"])
+        del_result = run_firewall_command([f"--zone={FIREWALLD_ZONE}", "--remove-port", f"{port}/{protocol}", "--permanent"])
         if del_result.returncode != 0:
             return del_result
         return run_firewall_command(["--reload"])
-    return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+    return subprocess.CompletedProcess([], 1, "", "La publicacion de puertos depende del entorno y no puede gestionarse desde la aplicacion")
 
 
 def sql_rich_rule(ip_value: str):
@@ -906,49 +1115,49 @@ def sql_rich_rule(ip_value: str):
     except Exception:
         net = ipaddress.ip_network("0.0.0.0/0")
     family = "ipv6" if net.version == 6 else "ipv4"
-    return f'rule family="{family}" source address="{ip_value}" port protocol="tcp" port="5432" accept'
+    return f'rule family="{family}" source address="{ip_value}" port protocol="tcp" port="{PUBLIC_DB_PORT}" accept'
 
 
 def allow_sql_firewall(ip_value: str):
     if ip_value == "0.0.0.0/0":
         if FIREWALL_BACKEND == "ufw":
-            return run_firewall_command(["allow", "5432/tcp"])
+            return run_firewall_command(["allow", f"{PUBLIC_DB_PORT}/tcp"])
         if FIREWALL_BACKEND == "firewalld":
-            add_result = run_firewall_command(["--zone=public", "--add-port", "5432/tcp", "--permanent"])
+            add_result = run_firewall_command([f"--zone={FIREWALLD_ZONE}", "--add-port", f"{PUBLIC_DB_PORT}/tcp", "--permanent"])
             if add_result.returncode != 0:
                 return add_result
             return run_firewall_command(["--reload"])
-        return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+        return subprocess.CompletedProcess([], 0, "", "")
 
     if FIREWALL_BACKEND == "ufw":
-        return run_firewall_command(["allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"])
+        return run_firewall_command(["allow", "from", ip_value, "to", "any", "port", str(PUBLIC_DB_PORT), "proto", "tcp"])
     if FIREWALL_BACKEND == "firewalld":
-        add_result = run_firewall_command(["--zone=public", "--add-rich-rule", sql_rich_rule(ip_value), "--permanent"])
+        add_result = run_firewall_command([f"--zone={FIREWALLD_ZONE}", "--add-rich-rule", sql_rich_rule(ip_value), "--permanent"])
         if add_result.returncode != 0:
             return add_result
         return run_firewall_command(["--reload"])
-    return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+    return subprocess.CompletedProcess([], 0, "", "")
 
 
 def revoke_sql_firewall(ip_value: str):
     if ip_value == "0.0.0.0/0":
         if FIREWALL_BACKEND == "ufw":
-            return run_firewall_command(["delete", "allow", "5432/tcp"])
+            return run_firewall_command(["delete", "allow", f"{PUBLIC_DB_PORT}/tcp"])
         if FIREWALL_BACKEND == "firewalld":
-            del_result = run_firewall_command(["--zone=public", "--remove-port", "5432/tcp", "--permanent"])
+            del_result = run_firewall_command([f"--zone={FIREWALLD_ZONE}", "--remove-port", f"{PUBLIC_DB_PORT}/tcp", "--permanent"])
             if del_result.returncode != 0:
                 return del_result
             return run_firewall_command(["--reload"])
-        return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+        return subprocess.CompletedProcess([], 0, "", "")
 
     if FIREWALL_BACKEND == "ufw":
-        return run_firewall_command(["delete", "allow", "from", ip_value, "to", "any", "port", "5432", "proto", "tcp"])
+        return run_firewall_command(["delete", "allow", "from", ip_value, "to", "any", "port", str(PUBLIC_DB_PORT), "proto", "tcp"])
     if FIREWALL_BACKEND == "firewalld":
-        del_result = run_firewall_command(["--zone=public", "--remove-rich-rule", sql_rich_rule(ip_value), "--permanent"])
+        del_result = run_firewall_command([f"--zone={FIREWALLD_ZONE}", "--remove-rich-rule", sql_rich_rule(ip_value), "--permanent"])
         if del_result.returncode != 0:
             return del_result
         return run_firewall_command(["--reload"])
-    return subprocess.CompletedProcess([], 1, "", "No firewall backend configured")
+    return subprocess.CompletedProcess([], 0, "", "")
 
 
 def set_sql_public_access(enabled: bool):
@@ -967,7 +1176,7 @@ def read_file_content(path: str):
             return result.stdout
     return ""
 
-def write_file_content(path: str, content: str):
+def write_file_content(path: str, content: str, owner: str = "postgres:postgres", mode: str = "640"):
     try:
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
@@ -980,8 +1189,8 @@ def write_file_content(path: str, content: str):
             tmp.close()
             move_result = run_sudo_command(["mv", tmp.name, path])
             if move_result.returncode == 0:
-                run_sudo_command(["chmod", "640", path])
-                run_sudo_command(["chown", "postgres:postgres", path])
+                run_sudo_command(["chmod", mode, path])
+                run_sudo_command(["chown", owner, path])
                 return True
         finally:
             try:
@@ -989,6 +1198,84 @@ def write_file_content(path: str, content: str):
             except Exception:
                 pass
     return False
+
+HAPROXY_CFG_PATH = os.getenv("HAPROXY_CFG_PATH", "/etc/haproxy/haproxy.cfg")
+HAPROXY_SQL_ACL_START = os.getenv("HAPROXY_SQL_ACL_START", "    # BEGIN THL SQL ACLS")
+HAPROXY_SQL_ACL_END = os.getenv("HAPROXY_SQL_ACL_END", "    # END THL SQL ACLS")
+
+
+def replace_haproxy_sql_acl_block(content: str, managed_lines: list[str]):
+    block_lines = [HAPROXY_SQL_ACL_START]
+    block_lines.extend(managed_lines)
+    block_lines.append(HAPROXY_SQL_ACL_END)
+    managed_block = "\n".join(block_lines) + "\n"
+    pattern = re.compile(
+        rf"(?ms)^{re.escape(HAPROXY_SQL_ACL_START)}\n.*?^{re.escape(HAPROXY_SQL_ACL_END)}\n?",
+        re.MULTILINE,
+    )
+    if pattern.search(content):
+        return pattern.sub(managed_block, content, count=1)
+    target_pattern = re.compile(r"(?m)^(\s*default_backend\s+pgbouncer_backend\s*)$")
+    if target_pattern.search(content):
+        return target_pattern.sub(managed_block + r"\1", content, count=1)
+    return content
+
+
+def build_haproxy_sql_acl_lines(ip_values: list[str]):
+    if any(ip_value == "0.0.0.0/0" for ip_value in ip_values):
+        return []
+    unique_ips = []
+    seen = set()
+    for ip_value in ip_values:
+        if ip_value in seen:
+            continue
+        seen.add(ip_value)
+        unique_ips.append(ip_value)
+    if not unique_ips:
+        return ["    tcp-request connection reject"]
+    lines = [f"    acl allowed_sql_clients src {ip_value}" for ip_value in unique_ips]
+    lines.append("    tcp-request connection reject unless allowed_sql_clients")
+    return lines
+
+
+def should_manage_sql_via_haproxy():
+    return POOLING_ENABLED and FIREWALL_BACKEND == "none"
+
+
+def reload_haproxy_runtime():
+    validate_result = run_sudo_command(["haproxy", "-c", "-f", HAPROXY_CFG_PATH])
+    if validate_result.returncode != 0:
+        return validate_result
+
+    if SERVICE_MANAGER == "systemd":
+        result = run_sudo_command(["systemctl", "reload", "haproxy"])
+        if result.returncode != 0:
+            return run_sudo_command(["systemctl", "restart", "haproxy"])
+        return result
+
+    if SERVICE_MANAGER == "service":
+        result = run_sudo_command(["service", "haproxy", "reload"])
+        if result.returncode != 0:
+            return run_sudo_command(["service", "haproxy", "restart"])
+        return result
+
+    return subprocess.CompletedProcess([], 1, "", "No se pudo recargar HAProxy en este entorno")
+
+
+def sync_haproxy_sql_acl(ip_values: list[str]):
+    if not POOLING_ENABLED and not os.path.exists(HAPROXY_CFG_PATH):
+        return subprocess.CompletedProcess([], 0, "", "")
+    current_content = read_file_content(HAPROXY_CFG_PATH)
+    if not current_content:
+        return subprocess.CompletedProcess([], 0, "", "") if not should_manage_sql_via_haproxy() else subprocess.CompletedProcess([], 1, "", "No se encontro la configuracion de HAProxy")
+    managed_lines = build_haproxy_sql_acl_lines(ip_values) if should_manage_sql_via_haproxy() else []
+    updated_content = replace_haproxy_sql_acl_block(current_content, managed_lines)
+    if updated_content == current_content:
+        return subprocess.CompletedProcess([], 0, "", "")
+    if not write_file_content(HAPROXY_CFG_PATH, updated_content, owner="root:root", mode="644"):
+        return subprocess.CompletedProcess([], 1, "", "No se pudo actualizar la configuracion de HAProxy")
+    return reload_haproxy_runtime()
+
 
 def strip_legacy_pg_hba_include(content: str):
     return re.sub(
@@ -1031,6 +1318,13 @@ def rebuild_pg_hba_rules():
         conn.close()
 
     has_public = any(row[0] == "0.0.0.0/0" for row in all_rows)
+    ip_values = []
+    seen_ips = set()
+    for ip_cidr, _, _ in all_rows:
+        if ip_cidr in seen_ips:
+            continue
+        seen_ips.add(ip_cidr)
+        ip_values.append(ip_cidr)
 
     lines = []
     if POOLING_ENABLED:
@@ -1049,6 +1343,9 @@ def rebuild_pg_hba_rules():
     updated_content = replace_pg_hba_managed_block(current_content, lines)
     write_file_content(PG_HBA_PATH, updated_content)
     reload_postgres_runtime()
+    haproxy_result = sync_haproxy_sql_acl(ip_values)
+    if haproxy_result.returncode != 0:
+        raise RuntimeError(haproxy_result.stderr or "No se pudo actualizar la politica SQL de HAProxy")
 
     # Keep SQL public exposure aligned with metadata.
     set_sql_public_access(has_public)
@@ -1389,18 +1686,20 @@ def create_client(request: ClientRequest, username: str = Depends(get_current_us
         )
 
         pool_sync_ok = sync_pgbouncer_auth()
+        public_db_endpoint = get_public_db_endpoint()
 
         response = {
             "status": "success",
             "connection_info": {
-                "host": PUBLIC_DB_HOST, 
-                "port": PUBLIC_DB_PORT,
+                "host": public_db_endpoint["host"],
+                "port": public_db_endpoint["port"],
                 "database": db_name,
                 "user": db_user,
                 "password": db_pass,
                 "connection_mode": "pooled" if POOLING_ENABLED else "direct",
                 "pool_mode": POOL_MODE if POOLING_ENABLED else None,
-                "connection_string": f"postgresql://{db_user}:{db_pass}@{PUBLIC_DB_HOST}:{PUBLIC_DB_PORT}/{db_name}"
+                "runtime_env": public_db_endpoint["runtime_env"],
+                "connection_string": f"postgresql://{db_user}:{db_pass}@{public_db_endpoint['host']}:{public_db_endpoint['port']}/{db_name}"
             }
         }
         if POOLING_ENABLED:
@@ -1639,8 +1938,10 @@ def get_stats(username: str = Depends(get_current_username)):
         conn.close()
 
     return {
-        "cpu": runtime_stats["cpu"],
+        "cpu": runtime_stats["cpu"]["percent"],
+        "cpu_details": runtime_stats["cpu"],
         "memory": runtime_stats["memory"],
+        "runtime_env": runtime_stats["runtime_env"],
         "connections": db_connections
     }
 
@@ -1655,23 +1956,35 @@ def get_ports(username: str = Depends(get_current_username)):
                 "detail": payload.get("detail"),
                 "backend": payload.get("backend"),
                 "ports": [],
+                "manageable": payload.get("manageable", False),
+                "runtime_env": RUNTIME_ENV,
+                "protected_ports": sorted(PROTECTED_PORTS),
+                "sql_port": PUBLIC_DB_PORT,
             }
         return {
             "status": payload.get("status", "inactive"),
             "backend": payload.get("backend", FIREWALL_BACKEND),
             "ports": payload.get("ports", []),
+            "detail": payload.get("detail"),
+            "manageable": payload.get("manageable", FIREWALL_BACKEND != "none"),
+            "runtime_env": RUNTIME_ENV,
+            "protected_ports": sorted(PROTECTED_PORTS),
+            "sql_port": PUBLIC_DB_PORT,
         }
     except Exception as e:
         print(f"Error getting ports: {e}")
-        return {"status": "error", "message": str(e), "ports": []}
+        return {"status": "error", "message": str(e), "ports": [], "runtime_env": RUNTIME_ENV, "protected_ports": sorted(PROTECTED_PORTS), "sql_port": PUBLIC_DB_PORT}
 
 @app.post("/api/ports/open")
 def open_port(req: PortRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
     try:
-        if req.port == 5432:
-            raise HTTPException(status_code=403, detail="Puerto SQL se gestiona por IP")
+        detail = protected_port_detail(req.port)
+        if detail:
+            raise HTTPException(status_code=403, detail=detail)
         if not is_port_allowed(req.port):
-            raise HTTPException(status_code=403, detail="Puerto no permitido")
+            raise HTTPException(status_code=403, detail="Puerto no permitido por la politica ALLOWED_PORTS")
+        if FIREWALL_BACKEND == "none":
+            raise HTTPException(status_code=409, detail=get_firewall_status_payload().get("detail"))
         result = allow_port_rule(req.port, req.protocol)
         
         if result.returncode == 0:
@@ -1687,10 +2000,13 @@ def open_port(req: PortRequest, username: str = Depends(get_current_username), c
 @app.post("/api/ports/close")
 def close_port(req: PortRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
     try:
-        if req.port == 5432:
-            raise HTTPException(status_code=403, detail="Puerto SQL se gestiona por IP")
+        detail = protected_port_detail(req.port)
+        if detail:
+            raise HTTPException(status_code=403, detail=detail)
         if not is_port_allowed(req.port):
-            raise HTTPException(status_code=403, detail="Puerto no permitido")
+            raise HTTPException(status_code=403, detail="Puerto no permitido por la politica ALLOWED_PORTS")
+        if FIREWALL_BACKEND == "none":
+            raise HTTPException(status_code=409, detail=get_firewall_status_payload().get("detail"))
         result = revoke_port_rule(req.port, req.protocol)
 
         if result.returncode == 0:
@@ -1728,6 +2044,23 @@ def get_sql_access(username: str = Depends(get_current_username)):
         cur.close()
         conn.close()
     try:
+        if FIREWALL_BACKEND == "none":
+            enforcement = "haproxy_acl" if POOLING_ENABLED else "pg_hba"
+            detail = (
+                f"El acceso SQL se aplica con HAProxy sobre el puerto {PUBLIC_DB_PORT}."
+                if enforcement == "haproxy_acl"
+                else "El acceso SQL se aplica con reglas pg_hba de PostgreSQL."
+            )
+            return {
+                "status": "managed",
+                "backend": FIREWALL_BACKEND,
+                "enforcement": enforcement,
+                "detail": detail,
+                "allowed": allowed,
+                "public_access": "0.0.0.0/0" in allowed,
+                "entries": entries,
+                "runtime_env": RUNTIME_ENV,
+            }
         payload = get_firewall_status_payload()
         if payload.get("status") == "error":
             return {
@@ -1735,19 +2068,24 @@ def get_sql_access(username: str = Depends(get_current_username)):
                 "message": "Could not get firewall status",
                 "detail": payload.get("detail"),
                 "backend": payload.get("backend"),
+                "enforcement": "firewall",
                 "allowed": allowed,
                 "public_access": False,
                 "entries": entries,
+                "runtime_env": RUNTIME_ENV,
             }
         return {
             "status": payload.get("status", "inactive"),
             "backend": payload.get("backend", FIREWALL_BACKEND),
+            "enforcement": "firewall",
+            "detail": payload.get("detail"),
             "allowed": allowed,
             "public_access": payload.get("public_sql", False),
             "entries": entries,
+            "runtime_env": RUNTIME_ENV,
         }
     except Exception as e:
-        return {"status": "error", "message": str(e), "allowed": allowed, "public_access": False, "entries": entries}
+        return {"status": "error", "message": str(e), "allowed": allowed, "public_access": False, "entries": entries, "runtime_env": RUNTIME_ENV}
 
 @app.post("/api/sql-access/allow")
 def allow_sql_access(req: SqlAccessAssignRequest, username: str = Depends(get_current_username), csrf_ok: bool = Depends(require_csrf)):
@@ -1847,11 +2185,16 @@ def get_pooling_status(username: str = Depends(get_current_username)):
 
 @app.get("/api/config")
 def get_config(username: str = Depends(get_current_username)):
+    public_db_endpoint = get_public_db_endpoint()
     return {
-        "public_db_host": PUBLIC_DB_HOST,
-        "public_db_port": PUBLIC_DB_PORT,
+        "public_db_host": public_db_endpoint["host"],
+        "public_db_port": public_db_endpoint["port"],
+        "public_db_host_source": public_db_endpoint["host_source"],
         "pooling_enabled": POOLING_ENABLED,
         "firewall_backend": FIREWALL_BACKEND,
+        "runtime_env": RUNTIME_ENV,
+        "protected_ports": sorted(PROTECTED_PORTS),
+        "app_web_port": APP_WEB_PORT,
         "pool_mode": POOL_MODE,
         "postgres_port": DB_PORT,
         "pgbouncer_host": PGBOUNCER_HOST,
