@@ -1,0 +1,18 @@
+services:
+  thl-sql:
+    build:
+      context: .
+    image: thl-sql:local
+    container_name: thl_sql_01
+    environment:
+      PUBLIC_HOST: localhost
+      PUBLIC_PORT: "8080"
+      PUBLIC_SCHEME: http
+      THL_NO_SYSTEMD: "1"
+    ports:
+      - "8080:80"
+      - "2222:22"
+      - "5432:5432"
+    stdin_open: true
+    tty: true
+    command: ["bash", "-lc", "tail -f /dev/null"]

@@ -24,6 +24,10 @@ THL_FORCE="${THL_FORCE:-0}"
 THL_AUTO_CACHE_CLEAN="${THL_AUTO_CACHE_CLEAN:-1}"
 THL_NO_SYSTEMD="${THL_NO_SYSTEMD:-0}"
 THL_PYTHON_BIN="${THL_PYTHON_BIN:-}"
+PUBLIC_HOST="${PUBLIC_HOST:-}"
+PUBLIC_PORT="${PUBLIC_PORT:-}"
+PUBLIC_SCHEME="${PUBLIC_SCHEME:-}"
+PANEL_URL="${PANEL_URL:-}"
 FIREWALL_BACKEND=""
 OS_FAMILY=""
 PKG_TOOL=""
@@ -49,6 +53,7 @@ PG_MANAGER_PID_FILE="/run/pg_manager.pid"
 PG_MANAGER_LOG_FILE="/var/log/pg_manager.log"
 PG_HBA_MANAGED_START="# BEGIN THL SQL MANAGED RULES"
 PG_HBA_MANAGED_END="# END THL SQL MANAGED RULES"
+PANEL_URL_OVERRIDE_DETECTED="0"
 
 log() {
     echo -e "${CYAN}$*${NC}"
@@ -122,6 +127,61 @@ detect_runtime_context() {
 
     log "Entorno detectado: ${RUNTIME_ENV}"
     log "Gestor de servicios detectado: ${SERVICE_MANAGER:-ninguno}"
+}
+
+resolve_panel_url() {
+    local default_scheme=""
+    local default_host=""
+    local default_port=""
+
+    PANEL_URL_OVERRIDE_DETECTED="0"
+    if [ -n "${PANEL_URL:-}" ] || [ -n "${PUBLIC_HOST:-}" ] || [ -n "${PUBLIC_PORT:-}" ] || [ -n "${PUBLIC_SCHEME:-}" ]; then
+        PANEL_URL_OVERRIDE_DETECTED="1"
+    fi
+
+    if [ "${USE_DOMAIN:-false}" = "true" ]; then
+        default_scheme="https"
+        default_host="${DOMAIN}"
+        default_port="443"
+    elif [ "${RUNTIME_ENV}" = "container" ]; then
+        default_scheme="http"
+        default_host="localhost"
+        default_port="80"
+    else
+        default_scheme="http"
+        default_host="${BIND_IP:-${PUBLIC_DB_HOST:-${SERVER_IP:-127.0.0.1}}}"
+        default_port="${WEB_PORT:-80}"
+    fi
+
+    PUBLIC_SCHEME="${PUBLIC_SCHEME:-${default_scheme}}"
+    PUBLIC_HOST="${PUBLIC_HOST:-${default_host}}"
+    PUBLIC_PORT="${PUBLIC_PORT:-${default_port}}"
+
+    if [ -n "${PANEL_URL:-}" ]; then
+        return
+    fi
+
+    PANEL_URL="${PUBLIC_SCHEME}://${PUBLIC_HOST}:${PUBLIC_PORT}"
+}
+
+print_container_panel_url_warning() {
+    if [ "${RUNTIME_ENV}" != "container" ] || [ "${PANEL_URL_OVERRIDE_DETECTED}" = "1" ]; then
+        return
+    fi
+
+    warn "ADVERTENCIA: Detectado entorno Docker. La URL mostrada usa localhost:80 por defecto."
+    warn "Verifica el mapeo real con: docker port <contenedor>"
+    warn "Puedes fijarla con: PUBLIC_HOST=tu-host PUBLIC_PORT=8080 PUBLIC_SCHEME=http o PANEL_URL completo."
+}
+
+write_container_panel_url_warning() {
+    if [ "${RUNTIME_ENV}" != "container" ] || [ "${PANEL_URL_OVERRIDE_DETECTED}" = "1" ]; then
+        return
+    fi
+
+    echo "Advertencia: Detectado entorno Docker. La URL mostrada usa localhost:80 por defecto."
+    echo "Verifica el mapeo real con: docker port <contenedor>"
+    echo "Puedes fijarla con: PUBLIC_HOST=tu-host PUBLIC_PORT=8080 PUBLIC_SCHEME=http o PANEL_URL completo."
 }
 
 require_runtime_support() {
@@ -1541,6 +1601,10 @@ ensure_repo_source() {
     export THL_AUTO_CACHE_CLEAN
     export THL_NO_SYSTEMD
     export THL_PYTHON_BIN
+    export PUBLIC_HOST="${PUBLIC_HOST:-}"
+    export PUBLIC_PORT="${PUBLIC_PORT:-}"
+    export PUBLIC_SCHEME="${PUBLIC_SCHEME:-}"
+    export PANEL_URL="${PANEL_URL:-}"
 
     exec bash "${BOOTSTRAP_DIR}/install.sh"
 }
@@ -1660,6 +1724,8 @@ collect_input() {
         PUBLIC_DB_HOST="${BIND_IP}"
     fi
 
+    resolve_panel_url
+
     PG_PASSWORD="${THL_PG_PASSWORD:-${existing_db_password:-}}"
     if [ -z "${PG_PASSWORD}" ]; then
         PG_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=')"
@@ -1676,9 +1742,10 @@ show_summary() {
     echo "  Service mgr:     ${SERVICE_MANAGER}"
     echo "  Firewall:        ${FIREWALL_BACKEND}"
     echo "  Admin user:      ${ADMIN_USERNAME}"
-    echo "  Panel URL:       ${APP_URL}"
+    echo "  Panel URL:       ${PANEL_URL}"
     echo "  Public DB host:  ${PUBLIC_DB_HOST}"
     echo "  PostgreSQL pass: ${PG_PASSWORD:0:5}..."
+    print_container_panel_url_warning
     echo -e "${CYAN}========================================${NC}"
     echo ""
 
@@ -1700,8 +1767,9 @@ write_install_summary_file() {
         echo "Modo: ${INSTALL_ACTION}"
         echo "Entorno: ${RUNTIME_ENV}"
         echo "Gestor de servicios: ${SERVICE_MANAGER}"
-        echo "Panel URL: ${APP_URL}"
+        echo "Panel URL: ${PANEL_URL}"
         echo "Admin user: ${ADMIN_USERNAME}"
+        write_container_panel_url_warning
         if [ "${EXISTING_INSTALL}" = "1" ]; then
             echo "Upgrade: instalacion previa detectada"
             if [ "${THL_PRESERVE_EXISTING}" = "1" ]; then
@@ -2341,7 +2409,7 @@ final_report() {
     echo -e "${GREEN}  Instalacion completada${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo "Modo:           ${INSTALL_ACTION}"
-    echo "Panel:          ${APP_URL}"
+    echo "Panel:          ${PANEL_URL}"
     echo "Usuario admin:  ${ADMIN_USERNAME}"
     echo "Fuente clave:   ${ADMIN_PASSWORD_SOURCE}"
     if [ "${EXISTING_INSTALL}" = "1" ]; then
@@ -2363,6 +2431,7 @@ final_report() {
     echo "Servicios:      ${services}"
     echo "Credenciales:   ${APP_DIR}/backend/.env"
     echo "Resumen UX:     ${THL_INSTALL_SUMMARY_FILE}"
+    print_container_panel_url_warning
     if [ "${SERVICE_MANAGER}" = "systemd" ]; then
         echo "Logs app:       journalctl -u pg_manager -f"
     else

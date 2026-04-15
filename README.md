@@ -56,6 +56,10 @@ Supported families:
 - `THL_ACTION=reinstall|upgrade|uninstall`
 - `THL_FORCE=1` (required for non-interactive destructive actions)
 - `THL_AUTO_CACHE_CLEAN=1` (default, clears package/temp caches automatically)
+- `PUBLIC_HOST` (override public panel host in summaries, useful in Docker)
+- `PUBLIC_PORT` (override public panel port in summaries, useful in Docker)
+- `PUBLIC_SCHEME=http|https` (override public panel scheme in summaries)
+- `PANEL_URL` (override the full public panel URL shown by the installer)
 
 ## Installation Modes (3 options)
 
@@ -129,6 +133,47 @@ Domain note:
 - If `THL_DOMAIN` is set, installer uses HTTPS flow with certbot.
 - If `THL_DOMAIN` is empty, installer uses IP mode (`http://IP:PORT`).
 - If an existing install is detected, credentials and current `.env` settings are preserved by default.
+- If installer runs inside a container without `PUBLIC_HOST`, `PUBLIC_PORT`, `PUBLIC_SCHEME`, or `PANEL_URL`, the summary defaults to `http://localhost:80` and prints a Docker mapping warning.
+
+## Docker Usage
+
+Build the local test image:
+
+```bash
+docker build -t thl-sql:local .
+```
+
+Recommended `docker run` for local container testing:
+
+```bash
+docker run -d \
+  -p 8080:80 \
+  -p 2222:22 \
+  -p 5432:5432 \
+  -e PUBLIC_HOST=localhost \
+  -e PUBLIC_PORT=8080 \
+  --name thl_sql_01 \
+  thl-sql:local
+```
+
+Then run the installer inside the container:
+
+```bash
+docker exec -it thl_sql_01 bash -lc 'THL_ACTION=reinstall THL_FORCE=1 bash /opt/thl-sql/install.sh --no-systemd'
+```
+
+If you prefer Compose, the repo now includes `docker-compose.yml` with the same defaults:
+
+```bash
+docker compose up -d
+docker compose exec thl-sql bash -lc 'THL_ACTION=reinstall THL_FORCE=1 bash /opt/thl-sql/install.sh --no-systemd'
+```
+
+Notes:
+
+- `Dockerfile` sets `PUBLIC_HOST=localhost`, `PUBLIC_PORT=80`, and `PUBLIC_SCHEME=http` as safe defaults.
+- The summary URL is controlled by `PANEL_URL` when you want to override the entire value directly.
+- If the mapped host port is not `80`, set `PUBLIC_PORT` explicitly so the summary shows a reachable URL.
 
 ## Dashboard Runtime Metrics
 
