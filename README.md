@@ -136,6 +136,15 @@ Domain note:
 - On container installations, `/api/stats` reads CPU and memory usage from Linux cgroups when available so limited containers reflect container quotas instead of host totals.
 - The dashboard metrics refresh interval is `10000` ms (10 seconds).
 
+## Repository Sync
+
+- Use `./push_dual_repos.ps1` from the repo root to push the current branch to both `thl-corporation/thl-sql` and the SPA mirror.
+- Use `./push_dual_repos.ps1 -DryRun` to validate both targets without publishing.
+- The preferred SPA target is `thl-corporation-spa/thl-sql`.
+- If that SPA repo is not available yet, the script automatically falls back to `thl-corporation-spa/vps-kamatera-SQL-01`.
+- `THL_SQL_CORP_SSH_KEY` can override the dedicated SSH key path for `thl-corporation/thl-sql`.
+- `THL_SQL_SPA_REPO_URL`, `THL_SQL_SPA_LEGACY_REPO_URL`, and `THL_SQL_CORP_REPO_URL` can override the default repo URLs.
+
 ## Technical Validation
 
 On the VPS:
