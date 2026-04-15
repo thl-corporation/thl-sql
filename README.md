@@ -130,6 +130,12 @@ Domain note:
 - If `THL_DOMAIN` is empty, installer uses IP mode (`http://IP:PORT`).
 - If an existing install is detected, credentials and current `.env` settings are preserved by default.
 
+## Dashboard Runtime Metrics
+
+- On host installations, `/api/stats` uses `psutil` to report CPU and memory.
+- On container installations, `/api/stats` reads CPU and memory usage from Linux cgroups when available so limited containers reflect container quotas instead of host totals.
+- The dashboard metrics refresh interval is `10000` ms (10 seconds).
+
 ## Technical Validation
 
 On the VPS:

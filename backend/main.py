@@ -118,6 +118,7 @@ def detect_service_manager():
 
 RUNTIME_ENV = detect_runtime_environment()
 SERVICE_MANAGER = detect_service_manager()
+CGROUP_CPU_SAMPLE = {"usage_seconds": None, "timestamp": None}
 
 # Auth Configuration
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
@@ -225,6 +226,232 @@ def is_process_running(process_names: set[str]):
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
     return False
+
+
+def read_text_if_exists(path: str):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return None
+
+
+def read_first_int(paths: list[str]):
+    for path in paths:
+        raw_value = read_text_if_exists(path)
+        if raw_value in (None, "", "max"):
+            continue
+        try:
+            return int(raw_value)
+        except ValueError:
+            continue
+    return None
+
+
+def parse_cpu_set_count(raw_value: str | None):
+    if not raw_value:
+        return None
+    count = 0
+    for chunk in raw_value.split(","):
+        entry = chunk.strip()
+        if not entry:
+            continue
+        if "-" in entry:
+            start_str, end_str = entry.split("-", 1)
+            try:
+                start = int(start_str)
+                end = int(end_str)
+            except ValueError:
+                return None
+            if end < start:
+                return None
+            count += (end - start + 1)
+        else:
+            try:
+                int(entry)
+            except ValueError:
+                return None
+            count += 1
+    return count or None
+
+
+def detect_cgroup_version():
+    if os.path.exists("/sys/fs/cgroup/cgroup.controllers"):
+        return 2
+    if (
+        os.path.exists("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+        or os.path.exists("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+        or os.path.exists("/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us")
+    ):
+        return 1
+    return None
+
+
+def get_container_cpu_limit_cores():
+    cgroup_version = detect_cgroup_version()
+    quota_cores = None
+
+    if cgroup_version == 2:
+        cpu_max = read_text_if_exists("/sys/fs/cgroup/cpu.max")
+        if cpu_max:
+            parts = cpu_max.split()
+            if len(parts) == 2 and parts[0] != "max":
+                try:
+                    quota = int(parts[0])
+                    period = int(parts[1])
+                    if quota > 0 and period > 0:
+                        quota_cores = quota / period
+                except ValueError:
+                    quota_cores = None
+    elif cgroup_version == 1:
+        quota = read_first_int(
+            [
+                "/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
+                "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us",
+            ]
+        )
+        period = read_first_int(
+            [
+                "/sys/fs/cgroup/cpu/cpu.cfs_period_us",
+                "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us",
+            ]
+        )
+        if quota is not None and period and quota > 0 and period > 0:
+            quota_cores = quota / period
+
+    cpuset_count = parse_cpu_set_count(
+        read_text_if_exists("/sys/fs/cgroup/cpuset.cpus.effective")
+        or read_text_if_exists("/sys/fs/cgroup/cpuset/cpuset.cpus")
+        or read_text_if_exists("/sys/fs/cgroup/cpuset.cpus")
+    )
+
+    if quota_cores and cpuset_count:
+        return max(min(quota_cores, cpuset_count), 0.001)
+    if quota_cores:
+        return max(quota_cores, 0.001)
+    if cpuset_count:
+        return cpuset_count
+    return psutil.cpu_count() or 1
+
+
+def read_container_cpu_usage_seconds():
+    cgroup_version = detect_cgroup_version()
+
+    if cgroup_version == 2:
+        cpu_stat = read_text_if_exists("/sys/fs/cgroup/cpu.stat")
+        if not cpu_stat:
+            return None
+        for line in cpu_stat.splitlines():
+            key, _, value = line.partition(" ")
+            if key != "usage_usec":
+                continue
+            try:
+                return int(value.strip()) / 1_000_000
+            except ValueError:
+                return None
+        return None
+
+    if cgroup_version == 1:
+        usage_ns = read_first_int(
+            [
+                "/sys/fs/cgroup/cpuacct/cpuacct.usage",
+                "/sys/fs/cgroup/cpu,cpuacct/cpuacct.usage",
+            ]
+        )
+        if usage_ns is None:
+            return None
+        return usage_ns / 1_000_000_000
+
+    return None
+
+
+def get_container_cpu_percent():
+    global CGROUP_CPU_SAMPLE
+
+    usage_seconds = read_container_cpu_usage_seconds()
+    if usage_seconds is None:
+        return None
+
+    now = time.monotonic()
+    previous_usage = CGROUP_CPU_SAMPLE["usage_seconds"]
+    previous_timestamp = CGROUP_CPU_SAMPLE["timestamp"]
+    CGROUP_CPU_SAMPLE = {"usage_seconds": usage_seconds, "timestamp": now}
+
+    if previous_usage is None or previous_timestamp is None or now <= previous_timestamp:
+        return 0.0
+
+    elapsed = now - previous_timestamp
+    cpu_limit_cores = get_container_cpu_limit_cores()
+    if elapsed <= 0 or cpu_limit_cores <= 0:
+        return 0.0
+
+    cpu_percent = ((usage_seconds - previous_usage) / (elapsed * cpu_limit_cores)) * 100
+    return round(max(0.0, min(cpu_percent, 100.0)), 2)
+
+
+def get_container_memory_stats():
+    cgroup_version = detect_cgroup_version()
+    host_total = psutil.virtual_memory().total
+
+    if cgroup_version == 2:
+        used = read_first_int(["/sys/fs/cgroup/memory.current"])
+        total = read_first_int(["/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.high"])
+    elif cgroup_version == 1:
+        used = read_first_int(
+            [
+                "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+                "/sys/fs/cgroup/memory/memory.memsw.usage_in_bytes",
+            ]
+        )
+        total = read_first_int(
+            [
+                "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+                "/sys/fs/cgroup/memory/memory.soft_limit_in_bytes",
+            ]
+        )
+    else:
+        return None
+
+    if used is None:
+        return None
+
+    # cgroup v1 commonly reports an effectively unlimited sentinel value.
+    if total is not None and host_total and total > host_total * 16:
+        total = None
+
+    if total is None or total <= 0:
+        return None
+
+    memory_percent = round((used / total) * 100, 2)
+    return {
+        "total": total,
+        "percent": max(0.0, min(memory_percent, 100.0)),
+        "used": used,
+    }
+
+
+def get_runtime_stats():
+    cpu_stats = None
+    memory_stats = None
+
+    if RUNTIME_ENV == "container":
+        cpu_stats = get_container_cpu_percent()
+        memory_stats = get_container_memory_stats()
+
+    if cpu_stats is None:
+        cpu_stats = psutil.cpu_percent(interval=None)
+    if memory_stats is None:
+        host_memory = psutil.virtual_memory()
+        memory_stats = {
+            "total": host_memory.total,
+            "percent": host_memory.percent,
+            "used": host_memory.used,
+        }
+
+    return {
+        "cpu": cpu_stats,
+        "memory": memory_stats,
+    }
 
 
 def get_debian_cluster_version():
@@ -1389,10 +1616,7 @@ def list_databases(username: str = Depends(get_current_username)):
 
 @app.get("/api/stats")
 def get_stats(username: str = Depends(get_current_username)):
-    # interval=None returns immediately, comparing to last call. 
-    # First call may be 0, but subsequent calls will be accurate.
-    cpu_percent = psutil.cpu_percent(interval=None) 
-    memory = psutil.virtual_memory()
+    runtime_stats = get_runtime_stats()
     
     # Get connections per DB
     conn = get_db_connection()
@@ -1415,12 +1639,8 @@ def get_stats(username: str = Depends(get_current_username)):
         conn.close()
 
     return {
-        "cpu": cpu_percent,
-        "memory": {
-            "total": memory.total,
-            "percent": memory.percent,
-            "used": memory.used
-        },
+        "cpu": runtime_stats["cpu"],
+        "memory": runtime_stats["memory"],
         "connections": db_connections
     }
 
