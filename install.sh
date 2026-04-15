@@ -24,6 +24,8 @@ THL_FORCE="${THL_FORCE:-0}"
 THL_AUTO_CACHE_CLEAN="${THL_AUTO_CACHE_CLEAN:-1}"
 THL_NO_SYSTEMD="${THL_NO_SYSTEMD:-0}"
 THL_PYTHON_BIN="${THL_PYTHON_BIN:-}"
+THL_INSTALL_TAILSCALE="${THL_INSTALL_TAILSCALE:-}"
+TAILSCALE_IP=""
 PUBLIC_HOST="${PUBLIC_HOST:-}"
 PUBLIC_PORT="${PUBLIC_PORT:-}"
 PUBLIC_SCHEME="${PUBLIC_SCHEME:-}"
@@ -806,10 +808,18 @@ set_env_key() {
     local file="$1"
     local key="$2"
     local value="$3"
-    local escaped
-    escaped="$(printf '%s' "${value}" | sed -e 's/[\/&]/\\&/g')"
-    if grep -q "^${key}=" "${file}"; then
-        sed -i "s|^${key}=.*|${key}=${escaped}|" "${file}"
+    local tmp_file
+    if grep -q "^${key}=" "${file}" 2>/dev/null; then
+        tmp_file="$(mktemp "${file}.XXXXXX")"
+        awk -v k="${key}" -v v="${value}" '{
+            pos = index($0, "=")
+            if (pos > 0 && substr($0, 1, pos - 1) == k) {
+                print k "=" v
+            } else {
+                print
+            }
+        }' "${file}" > "${tmp_file}"
+        mv "${tmp_file}" "${file}"
     else
         printf '%s=%s\n' "${key}" "${value}" >> "${file}"
     fi
@@ -1632,6 +1642,7 @@ ensure_repo_source() {
     export THL_AUTO_CACHE_CLEAN
     export THL_NO_SYSTEMD
     export THL_PYTHON_BIN
+    export THL_INSTALL_TAILSCALE
     export PUBLIC_HOST="${PUBLIC_HOST:-}"
     export PUBLIC_PORT="${PUBLIC_PORT:-}"
     export PUBLIC_SCHEME="${PUBLIC_SCHEME:-}"
@@ -1640,6 +1651,105 @@ ensure_repo_source() {
     export PUBLIC_DB_PORT="${PUBLIC_DB_PORT:-}"
 
     exec bash "${BOOTSTRAP_DIR}/install.sh"
+}
+
+ask_tailscale() {
+    if [ -n "${THL_INSTALL_TAILSCALE}" ]; then
+        return
+    fi
+
+    if [ "${THL_NONINTERACTIVE:-0}" = "1" ] || [ "${THL_UX_MODE}" = "1" ] || ! has_tty; then
+        THL_INSTALL_TAILSCALE="0"
+        return
+    fi
+
+    echo ""
+    echo "Deseas instalar Tailscale para acceso VPN privado?"
+    echo "Esto permite conectarse al panel y bases de datos via IP privada de Tailscale."
+    read -r -p "Instalar Tailscale? [s/N]: " TS_ANSWER < /dev/tty
+    case "${TS_ANSWER}" in
+        [SsYy]) THL_INSTALL_TAILSCALE="1" ;;
+        *)      THL_INSTALL_TAILSCALE="0" ;;
+    esac
+}
+
+install_tailscale() {
+    if [ "${THL_INSTALL_TAILSCALE}" != "1" ]; then
+        log "Tailscale omitido por configuracion del usuario."
+        return
+    fi
+
+    log "Instalando Tailscale..."
+    if command -v tailscale >/dev/null 2>&1; then
+        log "Tailscale ya esta instalado."
+    else
+        if [ "${OS_FAMILY}" = "debian" ]; then
+            curl -fsSL https://tailscale.com/install.sh | bash
+        elif [ "${OS_FAMILY}" = "rhel" ]; then
+            curl -fsSL https://tailscale.com/install.sh | bash
+        fi
+    fi
+
+    if ! command -v tailscale >/dev/null 2>&1; then
+        warn "No se pudo instalar Tailscale. Se continuara sin VPN privada."
+        THL_INSTALL_TAILSCALE="0"
+        return
+    fi
+
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        systemctl enable --now tailscaled >/dev/null 2>&1 || true
+    elif [ "${SERVICE_MANAGER}" = "service" ]; then
+        service tailscaled start >/dev/null 2>&1 || true
+    fi
+
+    sleep 2
+
+    local ts_status
+    ts_status="$(tailscale status --json 2>/dev/null | grep -o '"BackendState":"[^"]*"' | head -1 || true)"
+    if echo "${ts_status}" | grep -q '"Running"'; then
+        log "Tailscale ya esta autenticado."
+    else
+        echo ""
+        echo -e "${YELLOW}Tailscale necesita autenticacion.${NC}"
+        echo -e "${YELLOW}Se ejecutara 'tailscale up'. Sigue la URL que aparezca para registrar este nodo.${NC}"
+        echo ""
+        tailscale up
+        echo ""
+    fi
+
+    local ts_ip_attempt
+    for ts_ip_attempt in $(seq 1 30); do
+        TAILSCALE_IP="$(tailscale ip -4 2>/dev/null || true)"
+        if [ -n "${TAILSCALE_IP}" ]; then
+            break
+        fi
+        sleep 2
+    done
+
+    if [ -z "${TAILSCALE_IP}" ]; then
+        warn "No se pudo obtener la IP de Tailscale. Se continuara sin VPN privada."
+        THL_INSTALL_TAILSCALE="0"
+        return
+    fi
+
+    log "IP de Tailscale asignada: ${TAILSCALE_IP}"
+}
+
+apply_tailscale_config() {
+    if [ "${THL_INSTALL_TAILSCALE}" != "1" ] || [ -z "${TAILSCALE_IP}" ]; then
+        return
+    fi
+
+    log "Aplicando IP de Tailscale (${TAILSCALE_IP}) como PUBLIC_DB_HOST..."
+    PUBLIC_DB_HOST="${TAILSCALE_IP}"
+    PUBLIC_DB_HOST_SOURCE="tailscale"
+
+    local env_file_path="${APP_DIR}/backend/.env"
+    if [ -f "${env_file_path}" ]; then
+        set_env_key "${env_file_path}" "PUBLIC_DB_HOST" "${TAILSCALE_IP}"
+        set_env_key "${env_file_path}" "PUBLIC_DB_HOST_SOURCE" "tailscale"
+        set_env_key "${env_file_path}" "TAILSCALE_IP" "${TAILSCALE_IP}"
+    fi
 }
 
 collect_input() {
@@ -1796,6 +1906,11 @@ show_summary() {
     echo "  Public DB host:  ${PUBLIC_DB_HOST}"
     echo "  Public DB port:  ${PUBLIC_DB_PORT}"
     echo "  PostgreSQL pass: ${PG_PASSWORD:0:5}..."
+    if [ "${THL_INSTALL_TAILSCALE}" = "1" ]; then
+        echo "  Tailscale:       se instalara"
+    else
+        echo "  Tailscale:       omitido"
+    fi
     print_container_panel_url_warning
     echo -e "${CYAN}========================================${NC}"
     echo ""
@@ -1822,6 +1937,10 @@ write_install_summary_file() {
         echo "Public DB host: ${PUBLIC_DB_HOST}"
         echo "Public DB port: ${PUBLIC_DB_PORT}"
         echo "Admin user: ${ADMIN_USERNAME}"
+        if [ "${THL_INSTALL_TAILSCALE}" = "1" ] && [ -n "${TAILSCALE_IP}" ]; then
+            echo "Tailscale IP: ${TAILSCALE_IP}"
+            echo "Panel (VPN): http://${TAILSCALE_IP}:${WEB_PORT}"
+        fi
         write_container_panel_url_warning
         if [ "${EXISTING_INSTALL}" = "1" ]; then
             echo "Upgrade: instalacion previa detectada"
@@ -2492,6 +2611,11 @@ final_report() {
     if [ "${UX_MODE_ACTIVE}" = "1" ]; then
         echo "Modo UX:        habilitado (sin prompts)."
     fi
+    if [ "${THL_INSTALL_TAILSCALE}" = "1" ] && [ -n "${TAILSCALE_IP}" ]; then
+        echo "Tailscale IP:   ${TAILSCALE_IP}"
+        echo "Panel (VPN):    http://${TAILSCALE_IP}:${WEB_PORT}"
+        echo "DB host (VPN):  ${TAILSCALE_IP}"
+    fi
     echo "Firewall:       ${FIREWALL_BACKEND}"
     echo "Entorno:        ${RUNTIME_ENV}"
     echo "Servicios via:  ${SERVICE_MANAGER}"
@@ -2528,6 +2652,7 @@ main() {
     run_install_step "P11" "Aplicando accion de instalacion" handle_install_action
     run_install_step "1/11" "Instalando dependencias del sistema" install_prerequisites
     run_install_step "INPUT" "Recolectando parametros de instalacion" collect_input
+    run_install_step "TAILSCALE_ASK" "Preguntando sobre Tailscale" ask_tailscale
     run_install_step "RESUMEN" "Mostrando resumen de instalacion" show_summary
     run_install_step "2/11" "Ajustando DNS del sistema" configure_dns
     run_install_step "3/11" "Configurando PostgreSQL" configure_postgres_service
@@ -2539,6 +2664,8 @@ main() {
     run_install_step "8b/11" "Validando login admin" verify_admin_login
     run_install_step "9/11" "Configurando Nginx" configure_nginx
     run_install_step "10/11" "Configurando firewall" configure_firewall
+    run_install_step "TS_INSTALL" "Instalando Tailscale" install_tailscale
+    run_install_step "TS_CONFIG" "Aplicando configuracion Tailscale" apply_tailscale_config
     run_install_step "11/11" "Configurando watchdog" configure_watchdog
     run_install_step "11b/11" "Validando servicios finales" verify_stack_health
     run_install_step "FINAL" "Generando reporte final" final_report

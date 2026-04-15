@@ -121,6 +121,7 @@ def detect_service_manager():
 RUNTIME_ENV = detect_runtime_environment()
 SERVICE_MANAGER = detect_service_manager()
 CGROUP_CPU_SAMPLE = {"usage_seconds": None, "timestamp": None}
+HOST_CPU_SAMPLE = {"percent": 0.0, "timestamp": None}
 
 # Auth Configuration
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
@@ -541,9 +542,21 @@ def get_container_memory_stats():
 
 
 def get_host_cpu_stats():
+    global HOST_CPU_SAMPLE
     host_cores = psutil.cpu_count() or 1
+    # Use non-blocking call; psutil tracks internally between calls.
+    raw_percent = psutil.cpu_percent(interval=None)
+    now = time.monotonic()
+    prev_ts = HOST_CPU_SAMPLE["timestamp"]
+    # On the very first call (or if called too quickly after startup),
+    # psutil returns 0.0 because there is no previous sample.  In that
+    # case we do a short blocking measurement so the dashboard never
+    # shows a stale zero.
+    if prev_ts is None or raw_percent == 0.0 and (now - prev_ts) < 1.0:
+        raw_percent = psutil.cpu_percent(interval=0.1)
+    HOST_CPU_SAMPLE = {"percent": raw_percent, "timestamp": now}
     return {
-        "percent": psutil.cpu_percent(interval=None),
+        "percent": round(raw_percent, 2),
         "assigned_cores": host_cores,
         "host_cores": host_cores,
         "limit_source": "host",
@@ -1518,6 +1531,16 @@ try:
     sync_pgbouncer_auth()
 except Exception as e:
     print(f"Startup Warning: Could not initialize database: {e}")
+
+# Pre-warm CPU metrics so the first dashboard call returns real data.
+try:
+    psutil.cpu_percent(interval=0.1)
+    if RUNTIME_ENV == "container":
+        _warmup_usage = read_container_cpu_usage_seconds()
+        if _warmup_usage is not None:
+            CGROUP_CPU_SAMPLE = {"usage_seconds": _warmup_usage, "timestamp": time.monotonic()}
+except Exception:
+    pass
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):

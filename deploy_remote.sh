@@ -12,10 +12,21 @@ APP_DIR="/var/www/pg_manager"
 ensure_env_var() {
     local key="$1"
     local value="$2"
-    if grep -q "^${key}=" backend/.env 2>/dev/null; then
-        sed -i "s|^${key}=.*|${key}=${value}|" backend/.env
+    local env_file="backend/.env"
+    local tmp_file
+    if grep -q "^${key}=" "${env_file}" 2>/dev/null; then
+        tmp_file="$(mktemp "${env_file}.XXXXXX")"
+        awk -v k="${key}" -v v="${value}" '{
+            pos = index($0, "=")
+            if (pos > 0 && substr($0, 1, pos - 1) == k) {
+                print k "=" v
+            } else {
+                print
+            }
+        }' "${env_file}" > "${tmp_file}"
+        mv "${tmp_file}" "${env_file}"
     else
-        echo "${key}=${value}" >> backend/.env
+        printf '%s=%s\n' "${key}" "${value}" >> "${env_file}"
     fi
 }
 
