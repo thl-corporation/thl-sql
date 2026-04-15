@@ -1683,11 +1683,7 @@ install_tailscale() {
     if command -v tailscale >/dev/null 2>&1; then
         log "Tailscale ya esta instalado."
     else
-        if [ "${OS_FAMILY}" = "debian" ]; then
-            curl -fsSL https://tailscale.com/install.sh | bash
-        elif [ "${OS_FAMILY}" = "rhel" ]; then
-            curl -fsSL https://tailscale.com/install.sh | bash
-        fi
+        curl -fsSL https://tailscale.com/install.sh | bash
     fi
 
     if ! command -v tailscale >/dev/null 2>&1; then
@@ -1696,10 +1692,26 @@ install_tailscale() {
         return
     fi
 
-    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+    # Start the tailscaled daemon.
+    if [ "${RUNTIME_ENV}" = "container" ]; then
+        # In containers without systemd, start tailscaled in userspace mode.
+        if ! pgrep -x tailscaled >/dev/null 2>&1; then
+            log "Iniciando tailscaled en modo contenedor (userspace)..."
+            tailscaled --tun=userspace-networking --state=/var/lib/tailscale/tailscaled.state &
+            disown
+            sleep 3
+        fi
+    elif [ "${SERVICE_MANAGER}" = "systemd" ]; then
         systemctl enable --now tailscaled >/dev/null 2>&1 || true
     elif [ "${SERVICE_MANAGER}" = "service" ]; then
         service tailscaled start >/dev/null 2>&1 || true
+    else
+        # Fallback: start tailscaled manually if no service manager is available.
+        if ! pgrep -x tailscaled >/dev/null 2>&1; then
+            tailscaled --state=/var/lib/tailscale/tailscaled.state &
+            disown
+            sleep 3
+        fi
     fi
 
     sleep 2
@@ -1710,13 +1722,19 @@ install_tailscale() {
         log "Tailscale ya esta autenticado."
     else
         echo ""
-        echo -e "${YELLOW}Tailscale necesita autenticacion.${NC}"
-        echo -e "${YELLOW}Se ejecutara 'tailscale up'. Sigue la URL que aparezca para registrar este nodo.${NC}"
+        echo -e "${CYAN}========================================${NC}"
+        echo -e "${CYAN}  Tailscale - Autenticacion requerida${NC}"
+        echo -e "${CYAN}========================================${NC}"
+        echo -e "${YELLOW}Se ejecutara 'tailscale up'.${NC}"
+        echo -e "${YELLOW}Abre la URL que aparece a continuacion en tu navegador para vincular este nodo.${NC}"
+        echo -e "${YELLOW}La instalacion continuara automaticamente una vez autenticado.${NC}"
         echo ""
         tailscale up
         echo ""
+        echo -e "${GREEN}[OK] Tailscale autenticado exitosamente.${NC}"
     fi
 
+    # Poll for the Tailscale IPv4 address.
     local ts_ip_attempt
     for ts_ip_attempt in $(seq 1 30); do
         TAILSCALE_IP="$(tailscale ip -4 2>/dev/null || true)"
@@ -1732,7 +1750,7 @@ install_tailscale() {
         return
     fi
 
-    log "IP de Tailscale asignada: ${TAILSCALE_IP}"
+    echo -e "${GREEN}[OK] IP de Tailscale asignada: ${TAILSCALE_IP}${NC}"
 }
 
 apply_tailscale_config() {
@@ -1749,7 +1767,48 @@ apply_tailscale_config() {
         set_env_key "${env_file_path}" "PUBLIC_DB_HOST" "${TAILSCALE_IP}"
         set_env_key "${env_file_path}" "PUBLIC_DB_HOST_SOURCE" "tailscale"
         set_env_key "${env_file_path}" "TAILSCALE_IP" "${TAILSCALE_IP}"
+
+        # Update ALLOWED_ORIGINS to include the Tailscale IP so the panel
+        # accepts requests via the VPN.  Preserve existing origins.
+        local current_origins
+        current_origins="$(grep -oP '(?<=^ALLOWED_ORIGINS=).*' "${env_file_path}" 2>/dev/null || true)"
+        local ts_origin_http="http://${TAILSCALE_IP}:${WEB_PORT:-80}"
+        local ts_origin_base="http://${TAILSCALE_IP}"
+        if ! echo "${current_origins}" | grep -qF "${ts_origin_http}"; then
+            local new_origins="${current_origins:+${current_origins},}${ts_origin_http},${ts_origin_base}"
+            set_env_key "${env_file_path}" "ALLOWED_ORIGINS" "${new_origins}"
+        fi
     fi
+
+    # Update the PANEL_URL to reflect the Tailscale IP for the final report.
+    PANEL_URL="http://${TAILSCALE_IP}:${WEB_PORT:-80}"
+
+    # Allow Tailscale interface traffic through the firewall.
+    local ts_iface
+    ts_iface="$(ip -o link show | grep -oP 'tailscale\d+' | head -1 || true)"
+    if [ -n "${ts_iface}" ]; then
+        if [ "${FIREWALL_BACKEND}" = "ufw" ] && command -v ufw >/dev/null 2>&1; then
+            ufw allow in on "${ts_iface}" >/dev/null 2>&1 || true
+            log "Firewall: permitido trafico en interfaz ${ts_iface} (ufw)."
+        elif [ "${FIREWALL_BACKEND}" = "firewalld" ] && command -v firewall-cmd >/dev/null 2>&1; then
+            firewall-cmd --permanent --zone=trusted --add-interface="${ts_iface}" >/dev/null 2>&1 || true
+            firewall-cmd --reload >/dev/null 2>&1 || true
+            log "Firewall: interfaz ${ts_iface} agregada a zona trusted (firewalld)."
+        elif [ "${FIREWALL_BACKEND}" = "iptables" ] && command -v iptables >/dev/null 2>&1; then
+            iptables -A INPUT -i "${ts_iface}" -j ACCEPT 2>/dev/null || true
+            log "Firewall: permitido trafico en interfaz ${ts_iface} (iptables)."
+        fi
+    fi
+
+    # Restart pg_manager so it picks up the new PUBLIC_DB_HOST from .env.
+    log "Reiniciando pg_manager para aplicar configuracion de Tailscale..."
+    if [ "${SERVICE_MANAGER}" = "systemd" ]; then
+        systemctl restart pg_manager >/dev/null 2>&1 || true
+    elif [ "${SERVICE_MANAGER}" = "service" ]; then
+        service pg_manager restart >/dev/null 2>&1 || true
+    fi
+
+    log "Tailscale configurado. La IP ${TAILSCALE_IP} es ahora el host publico de conexion."
 }
 
 collect_input() {

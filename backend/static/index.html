@@ -778,9 +778,12 @@
                     }
                 }
                 if (cpuScopeText) {
-                    cpuScopeText.innerText = data.runtime_env === 'container'
-                        ? `Contenedor: uso cgroup sobre ${formatCpuCores(cpuDetails.assigned_cores)} CPU disponibles`
-                        : `Host/VPS: uso real del servidor sobre ${formatCpuCores(cpuDetails.assigned_cores)} CPU`;
+                    if (data.runtime_env === 'container') {
+                        const cpuSrc = cpuDetails.limit_source || cpuDetails.source || 'cgroup';
+                        cpuScopeText.innerText = `Contenedor: uso ${cpuSrc === 'host' ? 'psutil (sin limite cgroup)' : 'cgroup'} sobre ${formatCpuCores(cpuDetails.assigned_cores)} CPU disponibles`;
+                    } else {
+                        cpuScopeText.innerText = `Host/VPS: uso real del servidor sobre ${formatCpuCores(cpuDetails.assigned_cores)} CPU`;
+                    }
                 }
 
                 if (memoryUsageValue) {
@@ -796,9 +799,15 @@
                     }
                 }
                 if (memoryScopeText) {
-                    memoryScopeText.innerText = data.runtime_env === 'container'
-                        ? `Contenedor: RAM usada ${formatBytes(memoryDetails.used)} de ${memoryDetails.limited === false ? 'sin limite cgroup' : formatBytes(memoryDetails.assigned_bytes ?? memoryDetails.total)}`
-                        : `Host/VPS: RAM usada ${formatBytes(memoryDetails.used)} de ${formatBytes(memoryDetails.assigned_bytes ?? memoryDetails.total)}`;
+                    if (data.runtime_env === 'container') {
+                        const memLimit = memoryDetails.limited === false
+                            ? 'sin limite cgroup'
+                            : formatBytes(memoryDetails.assigned_bytes ?? memoryDetails.total);
+                        const memSrc = memoryDetails.limit_source === 'host_total' ? ' (fallback host)' : '';
+                        memoryScopeText.innerText = `Contenedor: RAM usada ${formatBytes(memoryDetails.used)} de ${memLimit}${memSrc}`;
+                    } else {
+                        memoryScopeText.innerText = `Host/VPS: RAM usada ${formatBytes(memoryDetails.used)} de ${formatBytes(memoryDetails.assigned_bytes ?? memoryDetails.total)}`;
+                    }
                 }
 
                 // Update Connections

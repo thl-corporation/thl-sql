@@ -74,6 +74,17 @@ chmod +x server/configure_sql_proxy.sh 2>/dev/null || true
 bash server/configure_sql_proxy.sh backend/.env
 venv/bin/python3 server/sync_pgbouncer_auth.py --env-file backend/.env
 
+# Preserve Tailscale config if active.
+if command -v tailscale >/dev/null 2>&1; then
+    TS_IP="$(tailscale ip -4 2>/dev/null || true)"
+    if [ -n "${TS_IP}" ]; then
+        echo "Tailscale activo, preservando IP ${TS_IP} como PUBLIC_DB_HOST..."
+        ensure_env_var "PUBLIC_DB_HOST" "${TS_IP}"
+        ensure_env_var "PUBLIC_DB_HOST_SOURCE" "tailscale"
+        ensure_env_var "TAILSCALE_IP" "${TS_IP}"
+    fi
+fi
+
 systemctl daemon-reload
 systemctl restart pgbouncer
 systemctl restart haproxy

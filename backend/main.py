@@ -55,6 +55,7 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", None)
 PUBLIC_DB_HOST = os.getenv("PUBLIC_DB_HOST", DB_HOST)
 PUBLIC_DB_PORT = int(os.getenv("PUBLIC_DB_PORT", "5432"))
 PUBLIC_DB_HOST_SOURCE = os.getenv("PUBLIC_DB_HOST_SOURCE", "")
+TAILSCALE_IP = os.getenv("TAILSCALE_IP", "")
 POOLING_ENABLED = os.getenv("POOLING_ENABLED", "false").lower() in ("1", "true", "yes")
 PGBOUNCER_HOST = os.getenv("PGBOUNCER_HOST", "127.0.0.1")
 PGBOUNCER_PORT = int(os.getenv("PGBOUNCER_PORT", "6432"))
@@ -323,7 +324,20 @@ def cgroup_join(base_path: str, cgroup_path: str | None, file_name: str):
 
 def cgroup_v2_candidates(file_name: str):
     proc_paths = get_proc_self_cgroup_paths()
-    return cgroup_join("/sys/fs/cgroup", proc_paths.get("unified"), file_name)
+    candidates = cgroup_join("/sys/fs/cgroup", proc_paths.get("unified"), file_name)
+    # Also walk up the cgroup hierarchy to find limit files set by a parent
+    # (common in Docker with cgroupns=host where limits are at a parent level).
+    unified = proc_paths.get("unified", "/")
+    current = unified.strip("/")
+    while current:
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        candidate = os.path.join("/sys/fs/cgroup", parent, file_name) if parent else os.path.join("/sys/fs/cgroup", file_name)
+        if candidate not in candidates:
+            candidates.append(candidate)
+        current = parent
+    return candidates
 
 
 def cgroup_v1_candidates(controller: str, file_name: str):
@@ -373,34 +387,68 @@ def normalize_cpu_core_value(value: float | int | None):
     return normalized
 
 
-def get_container_cpu_limit_details():
+def _read_cgroup_cpu_quota_cores():
+    """Try to read CPU quota from cgroup files (v1 and v2)."""
     cgroup_version = detect_cgroup_version()
-    quota_cores = None
-
     if cgroup_version == 2:
-        cpu_max = read_first_text(cgroup_v2_candidates("cpu.max"))
-        if cpu_max:
+        # Try all v2 candidate paths for cpu.max
+        for path in cgroup_v2_candidates("cpu.max"):
+            cpu_max = read_text_if_exists(path)
+            if not cpu_max:
+                continue
             parts = cpu_max.split()
             if len(parts) == 2 and parts[0] != "max":
                 try:
                     quota = int(parts[0])
                     period = int(parts[1])
                     if quota > 0 and period > 0:
-                        quota_cores = quota / period
+                        return quota / period
                 except ValueError:
-                    quota_cores = None
-    elif cgroup_version == 1:
+                    continue
+    if cgroup_version == 1 or cgroup_version is None:
+        # Also try v1 even if v2 was detected (hybrid setups)
         quota = read_first_int(cgroup_v1_candidates("cpu", "cpu.cfs_quota_us"))
         period = read_first_int(cgroup_v1_candidates("cpu", "cpu.cfs_period_us"))
         if quota is not None and period and quota > 0 and period > 0:
-            quota_cores = quota / period
+            return quota / period
+    return None
 
+
+def get_container_cpu_limit_details():
+    cgroup_version = detect_cgroup_version()
+
+    # 1. Try environment variable override first (most reliable for Docker).
+    env_cpu = os.getenv("CONTAINER_CPU_CORES")
+    if env_cpu:
+        try:
+            env_cores = float(env_cpu)
+            if env_cores > 0:
+                return {
+                    "assigned_cores": normalize_cpu_core_value(env_cores),
+                    "host_cores": psutil.cpu_count() or 1,
+                    "limit_source": "env_override",
+                    "limited": True,
+                }
+        except ValueError:
+            pass
+
+    # 2. Try cgroup CPU quota.
+    quota_cores = _read_cgroup_cpu_quota_cores()
+
+    # 3. Try cpuset.
     cpuset_count = parse_cpu_set_count(
         read_first_text(cgroup_v2_candidates("cpuset.cpus.effective"))
         or read_first_text(cgroup_v1_candidates("cpuset", "cpuset.cpus.effective"))
         or read_first_text(cgroup_v1_candidates("cpuset", "cpuset.cpus"))
         or read_text_if_exists("/sys/fs/cgroup/cpuset.cpus")
     )
+
+    # 4. Try os.sched_getaffinity as fallback for cpuset detection.
+    affinity_count = None
+    try:
+        affinity_count = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        pass
 
     host_cores = psutil.cpu_count() or 1
     assigned_cores = None
@@ -412,9 +460,14 @@ def get_container_cpu_limit_details():
     elif quota_cores:
         assigned_cores = max(quota_cores, 0.001)
         limit_source = "quota"
-    elif cpuset_count:
+    elif cpuset_count and cpuset_count < host_cores:
+        # Only use cpuset if it's actually restricting below host count.
         assigned_cores = cpuset_count
         limit_source = "cpuset"
+    elif affinity_count and affinity_count < host_cores:
+        # sched_getaffinity respects cpuset cgroup limits.
+        assigned_cores = affinity_count
+        limit_source = "affinity"
     else:
         assigned_cores = host_cores
 
@@ -431,23 +484,21 @@ def read_container_cpu_usage_seconds():
 
     if cgroup_version == 2:
         cpu_stat = read_first_text(cgroup_v2_candidates("cpu.stat"))
-        if not cpu_stat:
-            return None
-        for line in cpu_stat.splitlines():
-            key, _, value = line.partition(" ")
-            if key != "usage_usec":
-                continue
-            try:
-                return int(value.strip()) / 1_000_000
-            except ValueError:
-                return None
-        return None
+        if cpu_stat:
+            for line in cpu_stat.splitlines():
+                key, _, value = line.partition(" ")
+                if key != "usage_usec":
+                    continue
+                try:
+                    return int(value.strip()) / 1_000_000
+                except ValueError:
+                    pass
 
-    if cgroup_version == 1:
+    # Try v1 paths as well (handles hybrid cgroup setups and v2 fallback).
+    if cgroup_version in (1, 2, None):
         usage_ns = read_first_int(cgroup_v1_candidates("cpuacct", "cpuacct.usage"))
-        if usage_ns is None:
-            return None
-        return usage_ns / 1_000_000_000
+        if usage_ns is not None:
+            return usage_ns / 1_000_000_000
 
     return None
 
@@ -491,9 +542,55 @@ def get_container_cpu_stats():
     }
 
 
+def _parse_memory_limit(raw_value: int | None, host_total: int) -> int | None:
+    """Return a valid memory limit or None if the value is a sentinel/unlimited."""
+    if raw_value is None or raw_value <= 0:
+        return None
+    # cgroup v1 reports PAGE_COUNTER_MAX * PAGE_SIZE (~= 2^63) as "unlimited".
+    # cgroup v2 uses the literal string "max" (already filtered by read_first_int).
+    # Also catch any value absurdly larger than host memory.
+    if host_total and raw_value > host_total * 16:
+        return None
+    return raw_value
+
+
 def get_container_memory_stats():
     cgroup_version = detect_cgroup_version()
     host_total = psutil.virtual_memory().total
+
+    # 1. Environment variable override.
+    env_mem = os.getenv("CONTAINER_MEMORY_BYTES")
+    if env_mem:
+        try:
+            env_bytes = int(env_mem)
+            if env_bytes > 0:
+                # Still try to read actual usage from cgroup.
+                used = None
+                if cgroup_version == 2:
+                    used = read_first_int(cgroup_v2_candidates("memory.current"))
+                elif cgroup_version == 1:
+                    used = read_first_int(cgroup_v1_candidates("memory", "memory.usage_in_bytes"))
+                if used is None:
+                    used = psutil.virtual_memory().used
+                memory_percent = round((used / env_bytes) * 100, 2) if env_bytes else 0.0
+                return {
+                    "total": env_bytes,
+                    "percent": max(0.0, min(memory_percent, 100.0)),
+                    "used": used,
+                    "assigned_bytes": env_bytes,
+                    "host_total": host_total,
+                    "limit_source": "env_override",
+                    "limited": True,
+                    "scope": "container",
+                    "source": "env_override",
+                }
+        except ValueError:
+            pass
+
+    # 2. Read from cgroup files.
+    used = None
+    total = None
+    high = None
 
     if cgroup_version == 2:
         used = read_first_int(cgroup_v2_candidates("memory.current"))
@@ -503,20 +600,22 @@ def get_container_memory_stats():
         used = read_first_int(cgroup_v1_candidates("memory", "memory.usage_in_bytes")) or read_first_int(cgroup_v1_candidates("memory", "memory.memsw.usage_in_bytes"))
         total = read_first_int(cgroup_v1_candidates("memory", "memory.limit_in_bytes"))
         high = read_first_int(cgroup_v1_candidates("memory", "memory.soft_limit_in_bytes"))
-    else:
-        return None
+
+    # If cgroup v2 didn't find limits, also try v1 paths (hybrid setups).
+    if cgroup_version == 2 and total is None:
+        v1_total = read_first_int(cgroup_v1_candidates("memory", "memory.limit_in_bytes"))
+        if v1_total is not None:
+            total = v1_total
+        if used is None:
+            used = read_first_int(cgroup_v1_candidates("memory", "memory.usage_in_bytes"))
+        if high is None:
+            high = read_first_int(cgroup_v1_candidates("memory", "memory.soft_limit_in_bytes"))
 
     if used is None:
         return None
 
-    # cgroup v1 commonly reports an effectively unlimited sentinel value.
-    if total is not None and host_total and total > host_total * 16:
-        total = None
-
-    if high is not None and high <= 0:
-        high = None
-    if high is not None and host_total and high > host_total * 16:
-        high = None
+    total = _parse_memory_limit(total, host_total)
+    high = _parse_memory_limit(high, host_total)
 
     limit_bytes = total if total and total > 0 else None
     limit_source = "cgroup_limit"
@@ -603,6 +702,9 @@ def get_runtime_stats():
 
 def normalize_public_db_host(host_value: str):
     cleaned = (host_value or "").strip()
+    # When Tailscale is configured, always use its IP for public connection data.
+    if PUBLIC_DB_HOST_SOURCE == "tailscale" and TAILSCALE_IP:
+        return TAILSCALE_IP
     if cleaned in ("", "0.0.0.0", "::", "[::]"):
         return "localhost" if RUNTIME_ENV == "container" else "127.0.0.1"
     if cleaned in ("127.0.0.1", "::1"):
@@ -1542,6 +1644,28 @@ try:
 except Exception:
     pass
 
+# Startup diagnostics for cgroup detection.
+try:
+    _cg_ver = detect_cgroup_version()
+    _cpu_det = get_container_cpu_limit_details() if RUNTIME_ENV == "container" else None
+    _mem_det = get_container_memory_stats() if RUNTIME_ENV == "container" else None
+    print(f"[THL-SQL] Runtime: {RUNTIME_ENV}, cgroup version: {_cg_ver}")
+    if _cpu_det:
+        print(f"[THL-SQL] CPU: assigned={_cpu_det.get('assigned_cores')}, source={_cpu_det.get('limit_source')}, host={_cpu_det.get('host_cores')}")
+    if _mem_det:
+        print(f"[THL-SQL] Memory: assigned={_mem_det.get('assigned_bytes')}, source={_mem_det.get('limit_source')}, limited={_mem_det.get('limited')}")
+    elif RUNTIME_ENV == "container":
+        print("[THL-SQL] Memory: cgroup read failed, will fall back to host metrics")
+    if RUNTIME_ENV == "container":
+        _env_cpu = os.getenv("CONTAINER_CPU_CORES")
+        _env_mem = os.getenv("CONTAINER_MEMORY_BYTES")
+        if not _env_cpu and _cpu_det and not _cpu_det.get("limited"):
+            print("[THL-SQL] Tip: Set CONTAINER_CPU_CORES env var to override CPU limit detection")
+        if not _env_mem and (_mem_det is None or not _mem_det.get("limited")):
+            print("[THL-SQL] Tip: Set CONTAINER_MEMORY_BYTES env var to override memory limit detection")
+except Exception as e:
+    print(f"[THL-SQL] Startup diagnostics error: {e}")
+
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
     try:
@@ -2209,7 +2333,7 @@ def get_pooling_status(username: str = Depends(get_current_username)):
 @app.get("/api/config")
 def get_config(username: str = Depends(get_current_username)):
     public_db_endpoint = get_public_db_endpoint()
-    return {
+    config = {
         "public_db_host": public_db_endpoint["host"],
         "public_db_port": public_db_endpoint["port"],
         "public_db_host_source": public_db_endpoint["host_source"],
@@ -2221,7 +2345,10 @@ def get_config(username: str = Depends(get_current_username)):
         "pool_mode": POOL_MODE,
         "postgres_port": DB_PORT,
         "pgbouncer_host": PGBOUNCER_HOST,
-        "pgbouncer_port": PGBOUNCER_PORT
+        "pgbouncer_port": PGBOUNCER_PORT,
     }
+    if TAILSCALE_IP:
+        config["tailscale_ip"] = TAILSCALE_IP
+    return config
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
