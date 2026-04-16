@@ -378,6 +378,33 @@ def detect_cgroup_version():
     return None
 
 
+def _ns_root_is_container_cgroup() -> bool:
+    """Return True when /sys/fs/cgroup is this container's cgroup namespace root.
+
+    In Docker with cgroupns=private (the default since Docker 20.10), the
+    container gets its own cgroup namespace and /sys/fs/cgroup is remapped
+    to the container's root cgroup.  Reading cpu.stat or memory.current from
+    that path gives the FULL container aggregate (all processes: app +
+    PostgreSQL + PgBouncer + ...).
+
+    In cgroupns=host setups, /sys/fs/cgroup is the HOST's cgroup root, so we
+    must not read usage from there.
+
+    Detection: if /sys/fs/cgroup/memory.max is a finite value that fits within
+    host RAM, we are looking at a container-scoped namespace with a memory
+    limit, not the host cgroup tree (where memory.max would be "max").
+    """
+    mem_max_raw = read_text_if_exists("/sys/fs/cgroup/memory.max")
+    if not mem_max_raw or mem_max_raw.strip() == "max":
+        return False
+    try:
+        mem_max = int(mem_max_raw.strip())
+        host_total = psutil.virtual_memory().total
+        return 0 < mem_max <= host_total
+    except ValueError:
+        return False
+
+
 def normalize_cpu_core_value(value: float | int | None):
     if value is None:
         return None
@@ -483,7 +510,16 @@ def read_container_cpu_usage_seconds():
     cgroup_version = detect_cgroup_version()
 
     if cgroup_version == 2:
-        cpu_stat = read_first_text(cgroup_v2_candidates("cpu.stat"))
+        # Prefer reading cpu.stat from the cgroup namespace root so we capture
+        # ALL processes in the container (PostgreSQL, PgBouncer, app, ...).
+        # _ns_root_is_container_cgroup() guards against cgroupns=host setups
+        # where /sys/fs/cgroup is the HOST's root and would give host-wide CPU.
+        if _ns_root_is_container_cgroup():
+            cpu_stat = read_text_if_exists("/sys/fs/cgroup/cpu.stat")
+        else:
+            cpu_stat = None
+        if not cpu_stat:
+            cpu_stat = read_first_text(cgroup_v2_candidates("cpu.stat"))
         if cpu_stat:
             for line in cpu_stat.splitlines():
                 key, _, value = line.partition(" ")
@@ -593,9 +629,21 @@ def get_container_memory_stats():
     high = None
 
     if cgroup_version == 2:
-        used = read_first_int(cgroup_v2_candidates("memory.current"))
         total = read_first_int(cgroup_v2_candidates("memory.max"))
         high = read_first_int(cgroup_v2_candidates("memory.high"))
+
+        # For used memory, prefer reading from the cgroup namespace root
+        # (/sys/fs/cgroup/memory.current) which reports the full container
+        # total in cgroupns=private Docker setups (including all processes like
+        # PostgreSQL, PgBouncer, etc.), not just the app sub-cgroup.
+        # Validate against the known limit to avoid accidentally reading the
+        # host-level cgroup in cgroupns=host setups (would be >> container limit).
+        parsed_limit = _parse_memory_limit(total, host_total)
+        ns_root_used = read_first_int(["/sys/fs/cgroup/memory.current"])
+        if ns_root_used is not None and (parsed_limit is None or ns_root_used <= parsed_limit):
+            used = ns_root_used
+        else:
+            used = read_first_int(cgroup_v2_candidates("memory.current"))
     elif cgroup_version == 1:
         used = read_first_int(cgroup_v1_candidates("memory", "memory.usage_in_bytes")) or read_first_int(cgroup_v1_candidates("memory", "memory.memsw.usage_in_bytes"))
         total = read_first_int(cgroup_v1_candidates("memory", "memory.limit_in_bytes"))
@@ -610,6 +658,22 @@ def get_container_memory_stats():
             used = read_first_int(cgroup_v1_candidates("memory", "memory.usage_in_bytes"))
         if high is None:
             high = read_first_int(cgroup_v1_candidates("memory", "memory.soft_limit_in_bytes"))
+
+    # Last resort: sum all process RSS (includes all container processes).
+    if used is None:
+        try:
+            rss_total = 0
+            for p in psutil.process_iter(["memory_info"]):
+                try:
+                    info = p.info.get("memory_info")
+                    if info:
+                        rss_total += info.rss
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+            if rss_total > 0:
+                used = rss_total
+        except Exception:
+            pass
 
     if used is None:
         return None
